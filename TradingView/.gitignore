@@ -1,0 +1,9 @@
+# Claude Code internal files — contains local machine paths and permissions
+.claude/
+
+# Memory files
+memory/
+
+# OS
+.DS_Store
+Thumbs.db
