@@ -7,44 +7,124 @@ export const STRATEGY = {
   // ── Assets (BingX USDT-M Perpetual Futures symbols) ───────────
   // These are the symbols used for order execution on BingX.
   // For TradingView chart analysis, see SYMBOL_TV_MAP below.
-  SYMBOLS: ["BTCUSDT", "ETHUSDT", "XAUUSDT"],
+  SYMBOLS: [
+    // Tier 1 — highest liquidity
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+    // Tier 2 — established alts
+    "ADAUSDT", "LINKUSDT", "NEARUSDT", "UNIUSDT", "AAVEUSDT",
+    // Tier 3 — newer / higher volatility
+    "TRXUSDT", "SUIUSDT", "ONDOUSDT", "ENAUSDT", "HYPEUSDT",
+    // Commodities — high probability in current macro environment
+    // Gold: safe-haven demand, de-dollarization, central bank buying (ATH bull run)
+    // Silver: follows gold with lag; gold/silver ratio compression likely
+    // WTI: geopolitical risk + tariff demand uncertainty → high volatility for day trading
+    "XAUUSDT", "XAGUSDT", "WTIUSDT",
+  ],
 
   // ── TradingView Symbol Map ─────────────────────────────────────
   // Maps each BingX symbol to its TradingView chart symbol.
-  // Gold: TradingView uses "XAUUSD" (universal across brokers)
+  // Most symbols are identical; override only when they differ.
   SYMBOL_TV_MAP: {
-    BTCUSDT: "BTCUSDT", // same on both
-    ETHUSDT: "ETHUSDT", // same on both
-    XAUUSDT: "XAUUSD",  // Gold: standard TradingView symbol
+    BTCUSDT:  "BTCUSDT",
+    ETHUSDT:  "ETHUSDT",
+    SOLUSDT:  "SOLUSDT",
+    BNBUSDT:  "BNBUSDT",
+    XRPUSDT:  "XRPUSDT",
+    ADAUSDT:  "ADAUSDT",
+    LINKUSDT: "LINKUSDT",
+    NEARUSDT: "NEARUSDT",
+    UNIUSDT:  "UNIUSDT",
+    AAVEUSDT: "AAVEUSDT",
+    TRXUSDT:  "TRXUSDT",
+    SUIUSDT:  "SUIUSDT",
+    ONDOUSDT: "ONDOUSDT",
+    ENAUSDT:  "ENAUSDT",
+    HYPEUSDT: "HYPEUSDT",
+    XAUUSDT:  "XAUUSD",   // Gold: TradingView uses XAUUSD (no T)
+    XAGUSDT:  "XAGUSD",   // Silver: TradingView XAGUSD
+    WTIUSDT:  "USOIL",    // WTI Crude Oil: TradingView TVC:USOIL
   },
 
   // ── Per-Symbol Config ──────────────────────────────────────────
   SYMBOL_CONFIG: {
-    BTCUSDT: { enabled: true },
-    ETHUSDT: { enabled: true },
-    XAUUSDT: { enabled: true },
+    BTCUSDT:  { enabled: true },
+    ETHUSDT:  { enabled: true },
+    SOLUSDT:  { enabled: true },
+    BNBUSDT:  { enabled: true },
+    XRPUSDT:  { enabled: true },
+    ADAUSDT:  { enabled: true },
+    LINKUSDT: { enabled: true },
+    NEARUSDT: { enabled: true },
+    UNIUSDT:  { enabled: true },
+    AAVEUSDT: { enabled: true },
+    TRXUSDT:  { enabled: true },
+    SUIUSDT:  { enabled: true },
+    ONDOUSDT: { enabled: true },
+    ENAUSDT:  { enabled: true },
+    HYPEUSDT: { enabled: true },
+    XAUUSDT:  { enabled: true },
+    XAGUSDT:  { enabled: true },
+    WTIUSDT:  { enabled: true },
   },
 
-  // ── Per-Symbol SL Override ─────────────────────────────────────
-  // Gold moves 0.3-1%/day → 1.5% SL is appropriate.
-  // If a symbol is not listed here, STRATEGY.SL_PCT is used.
+  // ── Per-Symbol SL Distance (15-min Day Trading) ───────────────
+  // Tighter than daily — 15min ATR is ~40-60% of daily ATR.
+  // Each scale entry has its own individual SL at this distance.
+  // If a symbol is not listed here, STRATEGY.SL_PCT (0.5%) is used.
   SYMBOL_SL_PCT: {
-    BTCUSDT: 0.01,  // 1%   — high liquidity crypto
-    ETHUSDT: 0.012, // 1.2% — slightly more volatile than BTC
-    XAUUSDT: 0.015, // 1.5% — Gold: moderate volatility
+    // Tier 1
+    BTCUSDT:  0.005, // 0.5% — deep liquidity, 15min ATR ~$300-500
+    ETHUSDT:  0.006, // 0.6%
+    SOLUSDT:  0.008, // 0.8% — higher beta, wider 15min candles
+    BNBUSDT:  0.006, // 0.6%
+    XRPUSDT:  0.008, // 0.8% — news spikes common
+    // Tier 2
+    ADAUSDT:  0.008, // 0.8%
+    LINKUSDT: 0.008, // 0.8%
+    NEARUSDT: 0.010, // 1.0% — smaller cap, wider spread
+    UNIUSDT:  0.008, // 0.8%
+    AAVEUSDT: 0.008, // 0.8%
+    // Tier 3 — wider for high volatility
+    TRXUSDT:  0.008, // 0.8%
+    SUIUSDT:  0.010, // 1.0% — newer, erratic 15min candles
+    ONDOUSDT: 0.012, // 1.2% — low cap, high spread
+    ENAUSDT:  0.010, // 1.0%
+    HYPEUSDT: 0.012, // 1.2% — newer token, thin book
+    // Commodities — slightly wider SL due to external market sessions overlap
+    XAUUSDT:  0.008, // 0.8% — Gold 15min moves
+    XAGUSDT:  0.010, // 1.0% — Silver is more volatile than Gold
+    WTIUSDT:  0.012, // 1.2% — Oil has wider 15min swings, news spikes common
   },
 
   // ── Per-Symbol Leverage Caps ───────────────────────────────────
-  // Gold max 10x (more predictable, geopolitical spikes).
+  // Lower cap / newer assets get lower max leverage to limit exposure.
   SYMBOL_MAX_LEVERAGE: {
-    BTCUSDT: 30, // Setup 2 can use 30x on BTC
-    ETHUSDT: 10,
-    XAUUSDT: 10, // Gold: capped at 10x
+    // Tier 1
+    BTCUSDT:  30,  // Setup 2 (STH) uses 30x on BTC
+    ETHUSDT:  10,
+    SOLUSDT:  20,
+    BNBUSDT:  20,
+    XRPUSDT:  20,
+    // Tier 2
+    ADAUSDT:  15,
+    LINKUSDT: 15,
+    NEARUSDT: 10,
+    UNIUSDT:  10,
+    AAVEUSDT: 10,
+    // Tier 3
+    TRXUSDT:  15,
+    SUIUSDT:  10,
+    ONDOUSDT:  5,
+    ENAUSDT:  10,
+    HYPEUSDT: 10,
+    // Commodities — conservative leverage (external markets, less liquidity at night)
+    XAUUSDT:  10,
+    XAGUSDT:  10,
+    WTIUSDT:   5, // Oil: lower cap — extreme intraday volatility possible
   },
 
   // ── Signal Expiry ──────────────────────────────────────────────
-  // Pending signals are checked every 30s; expired ones are removed
-  // so stale setups never get executed accidentally.
+  // On 15-min timeframe signals go stale quickly — expire after 30 min.
   //
   // Conditions that expire a signal:
   //   1. Age > MAX_AGE_HOURS  (market conditions changed)
@@ -52,46 +132,67 @@ export const STRATEGY = {
   //   3. Price moved ENTRY_MISS_PCT past entry[0]  (LIMIT orders can't fill;
   //      opportunity has passed — a new scan will generate a fresh signal)
   SIGNAL_EXPIRY: {
-    MAX_AGE_HOURS:  4,    // 1 scanner cycle; a new scan will supersede this signal
-    ENTRY_MISS_PCT: 0.02, // 2% past first entry → setup conditions are stale
+    MAX_AGE_HOURS:  0.5,  // 30 min — 15min signals go stale fast
+    ENTRY_MISS_PCT: 0.01, // 1% past first entry → stale on 15min
   },
 
   // ── Scale-In Entries ───────────────────────────────────────────
-  // Instead of one market order, split the position into N LIMIT orders
-  // at progressively better prices. SL is placed at SL_PCT below/above
-  // the LAST (worst) entry. TPs are calculated from the average entry price.
+  // Each entry has its own individual SL (1% capital risk per entry).
   //
-  // Example (LONG, 3 entries, 0.4% spacing, BTC @ $75,000):
-  //   Entry 1: $75,000   (limit order at signal price)
-  //   Entry 2: $74,700   (0.4% lower — better avg if fills)
-  //   Entry 3: $74,400   (0.8% lower — best avg if fills)
-  //   Avg entry: $74,700
-  //   SL: $74,400 × 0.99 = $73,656 (1% below last entry)
-  //   TPs: calculated from avg $74,700
+  // Example (SHORT, 3 entries, 0.3% spacing, BTC @ $80,000):
+  //   Entry 1: $80,000  MARKET → SL at $80,400 (0.5% above = 1% risk)
+  //   Entry 2: $80,240  LIMIT  → SL at $80,641
+  //   Entry 3: $80,480  LIMIT  → SL at $80,882
+  //
+  // ⚠ RISK NOTE: with 3 entries all filled, max loss = 3 × 1% = 3%
+  //   if all stops hit simultaneously (e.g. gap on news).
+  //   The daily 1% loss limit will halt trading after the first stop out.
   SCALE_IN: {
     ENABLED:     true,
-    ENTRIES:     3,      // number of limit orders
-    SPACING_PCT: 0.004,  // 0.4% price improvement between each entry
+    ENTRIES:     3,      // number of scale levels
+    SPACING_PCT: 0.003,  // 0.3% price step between entries (15min range)
   },
 
-  // ── Risk ───────────────────────────────────────────────────────
-  SL_PCT: 0.01, // 1% default stop loss distance (below LAST scale entry)
+  // ── Daily / Monthly Risk & Profit Limits ─────────────────────
+  // Bot pauses trading for the rest of the day once realized losses
+  // exceed DAILY_RISK_PCT × capital OR profit target is reached.
+  DAILY_RISK_PCT:   0.01,   // 1% of capital — max loss per day
+  MONTHLY_RISK_PCT: 0.30,   // 30% of capital — informational limit
+
+  // Daily profit target — bot stops opening new trades when reached.
+  // ⚠ MATH NOTE: $100/day on $128 capital = 78% daily ROI.
+  //   With 1% risk per entry ($1.28), each trade at 2R makes ~$2.56.
+  //   You would need 40 consecutive winning trades per day to hit $100.
+  //   Suggested realistic target: $5-10/day (4-8%) until capital grows.
+  DAILY_PROFIT_TARGET: 0,   // 0 = sem parada por lucro — opera o dia inteiro buscando o máximo
+  DAILY_PROFIT_REFERENCE: 100, // meta de referência ($100/dia) — exibida no dashboard, não bloqueia trades
+
+  // ── Risk ─────────────────────────────────────────────────────
+  SL_PCT: 0.005, // 0.5% default SL distance on 15min timeframe
 
   // Minimum confidence score (0–100) for any setup to generate a signal
   MIN_SCORE: 60,
 
-  // Maximum open positions at once
-  MAX_POSITIONS: 5,
+  // Capital reserve — always keep this fraction of total capital free.
+  // Ensures the account is never fully deployed; new opportunities can
+  // always be taken regardless of how many positions are currently open.
+  // Example: $128 capital × 0.20 = $25.60 minimum always available.
+  MIN_FREE_CAPITAL_PCT: 0.20,
 
   // Capital allocated per trade slot (as fraction of total capital).
-  // 20% means you can have up to 5 simultaneous trades.
+  // This limits position value per individual entry — not trade count.
   CAPITAL_ALLOCATION_PCT: 0.20,
 
-  // ── Fibonacci Take-Profit Levels (in R multiples) ───────────────
+  // ── Fibonacci Take-Profit Levels (in R multiples) ──────────────
+  // Fib extensions: 1.618R, 2.618R, 4.236R from entry → SL distance.
+  // On 15min with 0.5% SL:
+  //   TP1 @ 1.618R = +0.81% from entry
+  //   TP2 @ 2.618R = +1.31% from entry
+  //   TP3 @ 4.236R = +2.12% from entry
   FIB_LEVELS: {
-    TP1: 2.0, // close 40% at 2R
-    TP2: 4.0, // close 35% at 4R
-    TP3: 6.0, // close 25% at 6R
+    TP1: 1.618, // close 40% at 1.618R (Fib extension)
+    TP2: 2.618, // close 35% at 2.618R
+    TP3: 4.236, // close 25% at 4.236R
   },
 
   // % of position to close at each TP level (must sum to 1.0)
@@ -127,9 +228,14 @@ export const STRATEGY = {
     EXTREME_GREED_MIN: 75,
   },
 
+  // ── Timeframes ─────────────────────────────────────────────────
+  // Switched to 15-min for day trading / scalping.
+  // ENTRY_ANALYSIS = timeframe for EMA, RSI, MACD, OHLCV bars.
+  // TREND_FILTER   = higher timeframe for trend confirmation.
+  //                  Set equal to ENTRY_ANALYSIS to use only one TF.
   TIMEFRAMES: {
-    ENTRY_ANALYSIS: "D",
-    TREND_FILTER: "W",
+    ENTRY_ANALYSIS: "15",  // 15-minute bars for all indicators
+    TREND_FILTER:   "60",  // 1-hour bars for trend direction filter
   },
 
   // ── Legacy Scoring Weights (kept for reference) ─────────────────
@@ -158,53 +264,97 @@ export const STRATEGY = {
 
 export const SETUPS = {
 
-  // ── Setup 1 ─ Trendline Breakout + Retest ────────────────────────
-  // Detects LTB (downtrend line) or LTA (uptrend line) breakout,
-  // followed by a retest of the broken line + reversal candle.
-  // Uses swing high/low detection on daily OHLCV bars.
-  TRENDLINE_BREAKOUT: {
-    id: "TRENDLINE_BREAKOUT",
-    name: "Setup 1 — Rompimento de LTB/LTA",
+  // ── Setup 1 ─ EMA Pullback Continuation (15min + 1H) ─────────────
+  // The single highest-probability day trading setup in trending markets.
+  //
+  // Logic:
+  //   1. 1H EMA stack check: EMA9 > EMA21 > EMA50 (bullish) or inverse
+  //   2. 15min: price pulls back to the EMA21 (within ema_touch_pct)
+  //   3. 15min: reversal candle confirms the rejection
+  //   4. 1H RSI not in extreme zone (>75 or <25) — guards against fade
+  //   5. Weekly bias (RSI/MACD/StochRSI) as direction bonus/penalty
+  //
+  // Why it works: In trending markets, price always returns to the EMA21
+  // before continuing the trend. This is where institutional orders sit.
+  // The EMA stack on 1H acts as a trend quality filter — if the 3 EMAs
+  // are misaligned, the trend is choppy and this setup stays silent.
+  EMA_PULLBACK: {
+    id: "EMA_PULLBACK",
+    name: "Setup 1 — EMA Pullback na Tendência (15min + 1H)",
     description:
-      "Rompimento de linha de tendência (LTB/LTA) + S/R horizontal + reteste + confirmação de reversão",
-    leverage: 3,
-    sl_pct: 0.015,     // 1.5% — wider to accommodate retest volatility
-    tp_r: { tp1: 2.0, tp2: 3.5, tp3: 5.5 }, // R multiples
+      "EMA9/21/50 stack no 1H define tendência; toque no EMA21 no 15min + vela de reversão = entrada",
+    leverage: 5,
+    sl_pct: 0.005,     // uses SYMBOL_SL_PCT override per asset
+    tp_r: { tp1: 1.618, tp2: 2.618, tp3: 4.236 }, // Fibonacci R multiples
     enabled: true,
-    symbols: ["BTCUSDT", "ETHUSDT"],
+    symbols: null,     // null = all symbols
+    ema_touch_pct: 0.008, // 0.8% from EMA21 counts as "touching zone"
   },
 
-  // ── Setup 2 ─ STH Realized Price Touch ───────────────────────────
-  // When BTC touches the Short-Term Holder Realized Price (yellow line
-  // on bitcoinmagazinepro.com), it acts as strong S/R.
-  // High leverage entry with SL just below/above the line.
+  // ── Setup 2 ─ STH Realized Price SHORT (Isolated Rule) ──────────
+  // When BTC price approaches the Short-Term Holder Realized Price
+  // (yellow line on bitcoinmagazinepro.com), open a SHORT.
+  //
+  // This is an ISOLATED setup — it ignores the general trend, score
+  // minimum, and leverage caps. It fires ONLY as SHORT on BTCUSDT.
+  //
+  // ⚠ RISK: 20x leverage + 10% SL. If price rises 10% from entry,
+  //   the stop triggers. With 10% SL at 20x: loss = 10% × 20 = 200%
+  //   of margin → always size using the 1% capital risk rule so the
+  //   DOLLAR loss = 1% × capital, regardless of the leverage used.
+  //
+  // Trigger sequence (monitored every 2 min by scanner):
+  //   1. STH Realized Price is fetched from CoinGlass / rules.json
+  //   2. Current BTC price is compared to STH line
+  //   3. If proximity ≤ touch_pct (3%) AND is CONVERGING (getting
+  //      closer since the last few scans) → setup fires as SHORT
+  //   4. No reversal candle required (10% SL gives more room)
   STH_REALIZED_PRICE: {
     id: "STH_REALIZED_PRICE",
-    name: "Setup 2 — STH Realized Price Touch",
+    name: "Setup 2 — STH Realized Price SHORT",
     description:
-      "BTC toca STH Realized Price (linha amarela) → entrada 30x leverage, SL no rompimento da linha",
-    leverage: 30,
-    sl_pct: 0.025,     // 2.5% — SL at line break; wider because 30x = 75% capital loss at break
-    tp_r: { tp1: 1.5, tp2: 2.5, tp3: 4.0 }, // tighter TPs at high leverage
+      "BTC aproximando da STH Realized Price (linha amarela bitcoinmagazinepro.com) → SHORT 20x, SL 10%",
+    leverage: 20,
+    sl_pct: 0.10,      // 10% — price must rise 10% above entry for BTC to be stopped
+    tp_r: { tp1: 1.5, tp2: 2.5, tp3: 4.0 },
     enabled: true,
     symbols: ["BTCUSDT"],
-    // Trigger: price within ±1.5% of STH Realized Price
-    touch_pct: 0.015,
+    direction: "SHORT", // always SHORT — never LONG from this setup
+    // Proximity thresholds:
+    touch_pct: 0.03,           // 3% — start alerting when price within 3% of STH line
+    converge_threshold_pct: 2, // if proximity dropped ≥2pp since last check → converging
   },
 
-  // ── Setup 3 ─ RSI + StochRSI + MACD Triple Alignment (Weekly) ────
-  // All three momentum indicators must align on the weekly timeframe:
-  // RSI crosses a key level + StochRSI crosses up/down + MACD changes color.
-  RSI_STOCH_MACD: {
-    id: "RSI_STOCH_MACD",
-    name: "Setup 3 — Triple Confluência RSI + StochRSI + MACD (Semanal)",
+  // ── Setup 3 ─ S/R Breakout + Retest (1H levels + 15min entry) ───────
+  // Identifies horizontal support/resistance from 1H swing highs/lows.
+  // Waits for a clean 15min breakout THROUGH the level (3+ bar closes),
+  // then enters when price returns to retest the broken level.
+  //
+  // Logic:
+  //   1. Find key S/R from 1H swing highs/lows (last 50 bars)
+  //   2. Confirm 15min breakout: 6+ of last 10 bar closes on the new side
+  //   3. Retest: price returns within retest_tolerance_pct of the level
+  //   4. Reversal candle at the retest confirms institutional buying/selling
+  //   5. EMA200 and weekly bias as bonus/penalty
+  //
+  // Why it works: when resistance becomes support (or vice versa), the
+  // "level flip" is where trapped traders are squeezed and new positions
+  // are added by institutions. This is the highest-volume entry zone.
+  //
+  // Note: RSI/StochRSI/MACD are NOT used as entry triggers here.
+  // They are ONLY used as weekly direction bias via _computeWeeklyBias().
+  SR_BREAKOUT_RETEST: {
+    id: "SR_BREAKOUT_RETEST",
+    name: "Setup 3 — Rompimento + Reteste de S/R (1H + 15min)",
     description:
-      "RSI cruza zona + StochRSI cruza + MACD muda cor no semanal = forte sinal direcional",
-    leverage: 5,
-    sl_pct: 0.02,
-    tp_r: { tp1: 2.0, tp2: 4.0, tp3: 6.5 },
+      "Nível-chave do 1H rompido com fechamento + reteste no 15min = entrada na virada de S/R",
+    leverage: 4,
+    sl_pct: 0.007,
+    tp_r: { tp1: 1.618, tp2: 2.618, tp3: 4.236 },
     enabled: true,
-    symbols: ["BTCUSDT", "ETHUSDT"],
+    symbols: null,
+    retest_tolerance_pct: 0.015, // 1.5% — price must return within 1.5% of broken level
+    min_touches: 2,              // minimum number of swing points defining the S/R zone
   },
 
   // ── Setup 4 ─ Open Interest Confirmation Filter ───────────────────

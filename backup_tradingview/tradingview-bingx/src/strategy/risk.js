@@ -10,21 +10,33 @@ import { STRATEGY } from "../config/strategy.js";
  * Check if a new trade is allowed given current risk state.
  *
  * @param {object} params
- * @param {object[]} openPositions — current open positions from BingX
- * @param {number} score — signal score (0–100)
- * @param {object} macroAnalysis — from analyzeMacro()
+ * @param {object[]} openPositions   — current open positions from BingX
+ * @param {number}   score           — signal score (0–100)
+ * @param {object}   macroAnalysis   — from analyzeMacro()
+ * @param {number}   [availableMargin] — free margin in account (USDT)
+ * @param {number}   [totalCapital]    — total equity in account (USDT)
  * @returns {{ allowed: boolean, reasons: string[] }}
  */
-export function checkRiskRules({ openPositions, score, macroAnalysis }) {
+export function checkRiskRules({ openPositions, score, macroAnalysis, availableMargin = null, totalCapital = null }) {
   const reasons = [];
   let allowed = true;
 
-  // 1. Max open positions
-  if (openPositions.length >= STRATEGY.MAX_POSITIONS) {
-    allowed = false;
-    reasons.push(
-      `Max positions (${STRATEGY.MAX_POSITIONS}) reached — ${openPositions.length} open`
-    );
+  // 1. Capital reserve guard — keep MIN_FREE_CAPITAL_PCT always available.
+  //    No hard cap on position count; the constraint is capital, not slots.
+  if (availableMargin !== null && totalCapital !== null && totalCapital > 0) {
+    const freeCapitalPct = availableMargin / totalCapital;
+    const minFree        = STRATEGY.MIN_FREE_CAPITAL_PCT ?? 0.20;
+    if (freeCapitalPct < minFree) {
+      allowed = false;
+      reasons.push(
+        `Capital livre insuficiente: ${(freeCapitalPct * 100).toFixed(1)}% disponível ` +
+        `(mínimo ${(minFree * 100).toFixed(0)}%) — aguardando fechamento de posição`
+      );
+    }
+  }
+  // Informational: log how many positions are open (no hard block)
+  if (openPositions.length > 0) {
+    reasons.push(`INFO: ${openPositions.length} posição(ões) aberta(s) atualmente`);
   }
 
   // 2. Minimum score
@@ -64,40 +76,53 @@ export function checkRiskRules({ openPositions, score, macroAnalysis }) {
  * - LONG:  entries go DOWN by spacing_pct each step (buy cheaper if price dips)
  * - SHORT: entries go UP by spacing_pct each step (sell higher if price rises)
  *
- * SL is placed at sl_pct below/above the LAST (worst) entry price.
- * TPs should be calculated from the avgEntry (returned here) for correct R:R.
+ * Each entry has its own individual SL at sl_pct from that entry price.
+ * ⚠ Risk note: if all entries fill and all stops are hit simultaneously,
+ *   total loss = N × 1% of capital (capped by daily limit in practice).
+ *
+ * The executor places a stop for ONLY the first (market) entry initially.
+ * Monitor.js should update stops as limit entries fill.
  *
  * @param {object} params
- * @param {number} params.entry     — signal entry price (first scale level)
- * @param {string} params.direction — "LONG" | "SHORT"
- * @param {number} params.slPct     — stop loss % (e.g. 0.01 = 1%)
- * @param {number} params.entries   — number of scale levels
- * @param {number} params.spacingPct — price step between levels (e.g. 0.004 = 0.4%)
- * @returns {{ levels, avgEntry, lastEntry, slPrice }}
+ * @param {number} params.entry       — signal entry price (first scale level)
+ * @param {string} params.direction   — "LONG" | "SHORT"
+ * @param {number} params.slPct       — stop loss % per entry (e.g. 0.005 = 0.5%)
+ * @param {number} params.entries     — number of scale levels
+ * @param {number} params.spacingPct  — price step between levels (e.g. 0.003 = 0.3%)
+ * @returns {{ levels, slPrices, avgEntry, lastEntry, slPrice }}
  */
 export function calcScaleEntries({ entry, direction, slPct, entries, spacingPct }) {
-  const levels = [];
+  const levels   = [];
+  const slPrices = [];
 
   for (let i = 0; i < entries; i++) {
     const factor = direction === "LONG"
       ? 1 - i * spacingPct   // lower prices = better avg entry for LONG
       : 1 + i * spacingPct;  // higher prices = better avg entry for SHORT
 
-    levels.push(parseFloat((entry * factor).toFixed(2)));
+    const entryPrice = parseFloat((entry * factor).toFixed(2));
+    levels.push(entryPrice);
+
+    // Individual SL for this entry: sl_pct distance in adverse direction
+    const sl = direction === "LONG"
+      ? parseFloat((entryPrice * (1 - slPct)).toFixed(2))
+      : parseFloat((entryPrice * (1 + slPct)).toFixed(2));
+    slPrices.push(sl);
   }
 
   const avgEntry  = levels.reduce((sum, p) => sum + p, 0) / levels.length;
   const lastEntry = levels[levels.length - 1];
 
-  const slPrice = direction === "LONG"
-    ? parseFloat((lastEntry * (1 - slPct)).toFixed(2))
-    : parseFloat((lastEntry * (1 + slPct)).toFixed(2));
+  // Signal-level SL = last (worst) entry's individual SL
+  // This is what the initial BingX stop order is set to.
+  const slPrice = slPrices[slPrices.length - 1];
 
   return {
-    levels,               // array of limit prices [entry1, entry2, ...]
-    avgEntry:  parseFloat(avgEntry.toFixed(2)),
+    levels,     // array of limit prices [entry1, entry2, ...]
+    slPrices,   // array of individual SL prices (one per entry)
+    avgEntry:   parseFloat(avgEntry.toFixed(2)),
     lastEntry,
-    slPrice,
+    slPrice,    // = slPrices[last] — used for the signal's single SL field
   };
 }
 

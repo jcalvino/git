@@ -17,6 +17,8 @@ import {
   updateSignalStatus,
   upsertBingXPosition,
   closeExternalTrade,
+  closeBotTradeFromSync,
+  clearClosedTrades,
 } from "../storage/trades.js";
 import { executeSignal, closeTrade } from "../bot/executor.js";
 import { monitorOnce } from "../bot/monitor.js";
@@ -25,6 +27,19 @@ import { getCoinMPositions, getCoinMOpenOrders, getCoinMBalance, isCoinMEnabled 
 import config from "../config/index.js";
 import { lastScanSummary } from "../bot/scanner.js";
 import { expireStalePendingSignals } from "../bot/signal_expiry.js";
+import { getRecentErrors, hasActiveErrors, dismissErrors } from "../bot/error_tracker.js";
+import { isDailyLimitReached, getDailyPnl, isDailyTargetReached, getDailyProfit } from "../storage/trades.js";
+import { STRATEGY, SETUPS } from "../config/strategy.js";
+import { getSTHRealizedPrice, getSTHProximityHistory } from "../analysis/sth_price.js";
+import { getMonitorStatus } from "../analysis/price_monitors.js";
+import { getMarketMetrics, refreshMarketMetrics } from "../analysis/market_metrics.js";
+import { repairMissingSLTP } from "../bot/sl_tp_repair.js";
+import { readFileSync, writeFileSync, existsSync } from "fs";
+import { resolve, dirname } from "path";
+
+const __serverDir = dirname(fileURLToPath(import.meta.url));
+const __rootDir   = resolve(__serverDir, "../..");
+const KB_PATH     = resolve(__rootDir, "data/knowledge_base.md");
 
 const app = express();
 app.use(cors());
@@ -177,7 +192,7 @@ async function syncAllPositions() {
     synced.push({ symbol: pos.symbol, side: pos.side, market, localId });
   }
 
-  // ── Auto-close EXTERNAL positions no longer live on BingX ─────
+  // ── Auto-close positions no longer live on BingX ──────────────
   // Build a set of live position keys (DB symbol format + direction).
   // Only auto-close if the relevant market's API call succeeded —
   // never close positions just because the API temporarily failed.
@@ -185,18 +200,30 @@ async function syncAllPositions() {
     allPositions.map((p) => `${p.symbol.replace("-", "")}:${p.side}`)
   );
 
-  const openExternal = getOpenTrades().filter((t) => t.trade_type === "EXTERNAL");
-  for (const t of openExternal) {
-    const isCoinM       = !t.symbol.endsWith("USDT");
-    const marketOk      = isCoinM
+  const openTrades = getOpenTrades();
+
+  // 1. EXTERNAL trades (created by sync from BingX positions opened manually)
+  for (const t of openTrades.filter((t) => t.trade_type === "EXTERNAL")) {
+    const isCoinM  = !t.symbol.endsWith("USDT");
+    const marketOk = isCoinM
       ? coinmPosRes.status === "fulfilled"
       : usdtPosRes.status === "fulfilled";
-
     if (marketOk && !liveKeys.has(`${t.symbol}:${t.direction}`)) {
       closeExternalTrade(t.id);
-      console.log(
-        `[SYNC] Auto-closed external #${t.id} ${t.direction} ${t.symbol} — no longer live on BingX`
-      );
+      console.log(`[SYNC] Auto-closed external #${t.id} ${t.direction} ${t.symbol} — not on BingX`);
+    }
+  }
+
+  // 2. Bot-created trades (scanner/executor opened them) — close if no longer on BingX.
+  //    This handles SL/TP hits that monitor.js may have missed.
+  for (const t of openTrades.filter((t) => t.trade_type !== "EXTERNAL")) {
+    const isCoinM  = !t.symbol.endsWith("USDT");
+    const marketOk = isCoinM
+      ? coinmPosRes.status === "fulfilled"
+      : usdtPosRes.status === "fulfilled";
+    if (marketOk && !liveKeys.has(`${t.symbol}:${t.direction}`)) {
+      closeBotTradeFromSync(t.id);
+      console.log(`[SYNC] Auto-closed bot trade #${t.id} ${t.direction} ${t.symbol} — SL/TP likely hit on BingX`);
     }
   }
 
@@ -360,6 +387,163 @@ app.get("/api/stats", (_req, res) => {
 app.get("/api/equity", (req, res) => {
   const days = parseInt(req.query.days ?? "30");
   res.json(getSnapshots(days));
+});
+
+// ── Bot Errors (surfaced as dashboard banner) ──────────────────
+app.get("/api/errors", (_req, res) => {
+  res.json({
+    hasActive: hasActiveErrors(),
+    errors:    getRecentErrors(20),
+  });
+});
+
+app.post("/api/errors/dismiss", (_req, res) => {
+  dismissErrors();
+  res.json({ success: true });
+});
+
+// ── Daily Risk Status ──────────────────────────────────────────
+app.get("/api/risk/daily", (_req, res) => {
+  const pnl          = getDailyPnl();
+  const profit       = getDailyProfit();
+  const limited      = isDailyLimitReached(config.capitalUsdt);
+  const profitTarget    = STRATEGY.DAILY_PROFIT_TARGET ?? 0;       // hard stop (0 = off)
+  const profitReference = STRATEGY.DAILY_PROFIT_REFERENCE ?? 0;   // display-only goal
+  const targetHit       = isDailyTargetReached(profitTarget);      // always false when 0
+  res.json({
+    dailyPnl:        parseFloat(pnl.toFixed(2)),
+    dailyProfit:     parseFloat(profit.toFixed(2)),
+    capital:         config.capitalUsdt,
+    limitPct:        0.01,
+    limitAmount:     parseFloat((config.capitalUsdt * 0.01).toFixed(2)),
+    limited,
+    profitTarget,
+    profitReference,  // $100 — shown in dashboard as the daily goal bar
+    targetHit,
+  });
+});
+
+// ── STH Realized Price Monitor ────────────────────────────────
+app.get("/api/sth-monitor", async (_req, res) => {
+  try {
+    // Fetch current BTC price for proximity calculation
+    let btcPrice = null;
+    try { btcPrice = await getPrice("BTC-USDT"); } catch { /* offline */ }
+
+    const sth     = await getSTHRealizedPrice(btcPrice);
+    const history = getSTHProximityHistory();
+    const cfg     = SETUPS?.STH_REALIZED_PRICE ?? {};
+
+    res.json({
+      sthPrice:        sth.price,
+      source:          sth.source,
+      btcPrice,
+      touchProximityPct: sth.touchProximityPct,
+      priceAbove:      sth.priceAbove,
+      isNearLine:      sth.isNearLine,
+      isConverging:    sth.isConverging,
+      proximityDelta:  sth.proximityDelta,
+      convergenceStatus: sth.convergenceStatus,
+      historyLength:   sth.historyLength,
+      touchThresholdPct: (cfg.touch_pct ?? 0.03) * 100,
+      leverage:        cfg.leverage ?? 20,
+      slPct:           (cfg.sl_pct ?? 0.10) * 100,
+      history: history.slice(-10).map((h) => ({
+        pct:        h.pct,
+        priceAbove: h.priceAbove,
+        ts:         new Date(h.ts).toISOString(),
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Price Level Monitors ───────────────────────────────────────
+app.get("/api/monitors", (_req, res) => {
+  try {
+    res.json({ monitors: getMonitorStatus() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Market Metrics ─────────────────────────────────────────────
+// Cached snapshot updated every 5 min by the scanner.
+// Returns stale data + triggers background refresh if cache is old.
+app.get("/api/market-metrics", (_req, res) => {
+  res.json(getMarketMetrics());
+});
+
+// Force an immediate refresh (useful after server restart)
+app.post("/api/market-metrics/refresh", async (_req, res) => {
+  try {
+    const metrics = await refreshMarketMetrics(null);
+    res.json({ success: true, metrics });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Admin ──────────────────────────────────────────────────────
+// DELETE all closed/stopped trade records (keeps open positions).
+// Used by the dashboard "Clear History" button.
+app.post("/api/admin/clear-history", (_req, res) => {
+  try {
+    const deleted = clearClosedTrades();
+    res.json({ success: true, deleted });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Audit open BingX positions for missing SL/TP and apply them.
+app.post("/api/admin/repair-sl-tp", async (_req, res) => {
+  try {
+    const report = await repairMissingSLTP();
+    res.json({ success: true, ...report });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Strategy rules (read-only) ─────────────────────────────────
+// Serves the SETUPS + STRATEGY config to the dashboard for display.
+app.get("/api/strategy", (_req, res) => {
+  res.json({ setups: SETUPS, strategy: STRATEGY });
+});
+
+// ── Knowledge Base ─────────────────────────────────────────────
+// Persistent markdown file for trading knowledge.
+// Dashboard reads it; Claude Code appends to it via POST.
+
+app.get("/api/knowledge-base", (_req, res) => {
+  try {
+    const content = existsSync(KB_PATH)
+      ? readFileSync(KB_PATH, "utf8")
+      : "# Base de Conhecimento\n\nNenhuma entrada ainda.\n";
+    res.json({ content });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/knowledge-base", (req, res) => {
+  try {
+    const { title, content } = req.body ?? {};
+    if (!title || !content) {
+      return res.status(400).json({ error: "title e content são obrigatórios" });
+    }
+    const existing = existsSync(KB_PATH)
+      ? readFileSync(KB_PATH, "utf8")
+      : "# Base de Conhecimento\n\n";
+    const date    = new Date().toLocaleDateString("pt-BR");
+    const entry   = `\n---\n## ${title}\n*Adicionado em ${date}*\n\n${content}\n`;
+    writeFileSync(KB_PATH, existing + entry, "utf8");
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // ── Start ──────────────────────────────────────────────────────

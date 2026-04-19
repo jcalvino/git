@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node scripts/start.js",
     "stop": "node scripts/stop.js",
+    "restart": "node scripts/restart.js",
     "update-rules": "node scripts/update-rules.js",
     "scan": "node src/bot/scanner.js --once",
     "bot": "node src/bot/scanner.js",

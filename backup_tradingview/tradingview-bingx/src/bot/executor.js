@@ -3,10 +3,11 @@
 //  Called when user clicks APROVAR in the dashboard.
 // ─────────────────────────────────────────────────────────────────
 
-import { placeOrder, placeLimitOrder, setLeverage, getPositions, placeSlTpOrders } from "../exchanges/bingx.js";
+import { placeOrder, placeLimitOrder, setLeverage, getPositions, getBalance, placeSlTpOrders } from "../exchanges/bingx.js";
 import { getSignal, openTrade, updateSignalStatus } from "../storage/trades.js";
 import { checkRiskRules } from "../strategy/risk.js";
 import { analyzeMacro } from "../analysis/macro.js";
+import { logError, logWarn } from "./error_tracker.js";
 import config from "../config/index.js";
 
 /**
@@ -30,15 +31,18 @@ export async function executeSignal(signalId) {
   }
 
   // Re-check risk rules before executing
-  const [openPositions, macro] = await Promise.all([
+  const [openPositions, macro, balance] = await Promise.all([
     getPositions(),
     analyzeMacro(),
+    getBalance().catch(() => null),  // non-critical — paper mode or no API key
   ]);
 
   const riskCheck = checkRiskRules({
     openPositions,
     score: signal.score,
     macroAnalysis: macro,
+    availableMargin: balance?.available ?? null,
+    totalCapital:    balance?.total    ?? null,
   });
 
   if (!riskCheck.allowed) {
@@ -60,14 +64,40 @@ export async function executeSignal(signalId) {
   const side         = signal.direction === "LONG" ? "BUY" : "SELL";
   const positionSide = signal.direction;
 
-  // ── Scale-in: place N LIMIT orders ────────────────────────────
+  // ── Scale-in entry strategy ────────────────────────────────────
+  // ROOT CAUSE FIX: BingX rejects STOP_MARKET orders when no position
+  // exists yet (scale-in LIMIT orders pending but unfilled).
+  //
+  // Solution: Entry 1 is always a MARKET order so the position is
+  // immediately established and the SL can be placed right after.
+  // Entries 2-N remain LIMIT orders at progressively better prices,
+  // preserving the scale-in average-entry benefit.
   const scaleEntries  = signal.scale_entries ?? [];
   const scaleOrders   = [];
   let   firstOrderResult = null;
 
   if (scaleEntries.length > 0) {
-    // Place each scale entry as a LIMIT (GTC) order
-    for (const entry of scaleEntries) {
+    const [firstEntry, ...restEntries] = scaleEntries;
+
+    // ── Entry 1: MARKET — establishes position immediately ────────
+    try {
+      firstOrderResult = await placeOrder({
+        symbol: bingxSymbol,
+        side,
+        positionSide,
+        quantity: firstEntry.size,
+      });
+      scaleOrders.push({ index: firstEntry.index, price: firstEntry.price, orderId: firstOrderResult.orderId, type: "MARKET" });
+      console.log(
+        `[EXECUTOR] Entry 1/${scaleEntries.length}: MARKET ${side} ${firstEntry.size} ${bingxSymbol}` +
+        ` @ ~$${firstOrderResult.price?.toLocaleString() ?? "?"} → #${firstOrderResult.orderId}`
+      );
+    } catch (err) {
+      return { success: false, error: `Entry 1 (market) failed: ${err.message}` };
+    }
+
+    // ── Entries 2-N: LIMIT at progressively better prices ─────────
+    for (const entry of restEntries) {
       try {
         const order = await placeLimitOrder({
           symbol: bingxSymbol,
@@ -76,19 +106,18 @@ export async function executeSignal(signalId) {
           quantity: entry.size,
           price:    entry.price,
         });
-        scaleOrders.push({ index: entry.index, price: entry.price, orderId: order.orderId });
-        if (!firstOrderResult) firstOrderResult = order;
+        scaleOrders.push({ index: entry.index, price: entry.price, orderId: order.orderId, type: "LIMIT" });
         console.log(
-          `[EXECUTOR] Scale entry ${entry.index}/${scaleEntries.length}: ` +
-          `LIMIT ${side} ${entry.size} @ $${entry.price.toLocaleString()} → #${order.orderId}`
+          `[EXECUTOR] Entry ${entry.index}/${scaleEntries.length}: LIMIT ${side} ${entry.size}` +
+          ` @ $${entry.price.toLocaleString()} → #${order.orderId}`
         );
       } catch (err) {
-        console.warn(`[EXECUTOR] Scale entry ${entry.index} failed: ${err.message}`);
+        console.warn(`[EXECUTOR] Entry ${entry.index} (LIMIT) failed: ${err.message}`);
         scaleOrders.push({ index: entry.index, price: entry.price, orderId: null, error: err.message });
       }
     }
   } else {
-    // Fallback: single market order (scale_entries not set)
+    // No scale entries — single market order
     try {
       firstOrderResult = await placeOrder({
         symbol: bingxSymbol, side, positionSide, quantity: signal.position_size,
@@ -99,46 +128,68 @@ export async function executeSignal(signalId) {
   }
 
   if (!firstOrderResult) {
-    return { success: false, error: "All scale entries failed — no position opened" };
+    return { success: false, error: "Entry failed — no position opened" };
   }
 
-  // Save trade using the avg entry price (scale-in target)
+  // Save trade record (position now open via market entry)
   const avgEntry = signal.avg_entry ?? signal.entry;
   const tradeId  = openTrade(signalId, { ...firstOrderResult, price: avgEntry, scaleOrders });
 
-  // ── SL + TP on full expected position size ─────────────────────
-  // Placed immediately — covers worst-case (all entries fill).
-  // If only partial fill: BingX only closes what's open.
+  // ── SL + TP — position is open, BingX will accept these ──────────
   let slTpResult = null;
   try {
     slTpResult = await placeSlTpOrders({
-      symbol:   bingxSymbol,
+      symbol:    bingxSymbol,
       direction: signal.direction,
-      size:     signal.position_size,
-      slPrice:  signal.sl,
-      tp1Price: signal.tp1,
-      tp2Price: signal.tp2,
-      tp3Price: signal.tp3,
+      size:      signal.position_size,
+      slPrice:   signal.sl,
+      tp1Price:  signal.tp1,
+      tp2Price:  signal.tp2,
+      tp3Price:  signal.tp3,
     });
   } catch (err) {
-    console.warn(`[EXECUTOR] SL/TP placement failed: ${err.message}`);
+    const msg = `SL/TP placement threw: ${err.message}`;
+    console.error(`[EXECUTOR] ${msg}`);
+    logError("error", "EXECUTOR",
+      `CRITICAL: No SL on trade #${tradeId} ${signal.direction} ${signal.symbol} — ${msg}`,
+      { tradeId, sl: signal.sl, symbol: signal.symbol }
+    );
   }
 
-  const scaleLog = scaleOrders
-    .map((o) => `    Entry ${o.index}: $${o.price.toLocaleString()} → ${o.orderId ?? o.error ?? "?"}`)
+  // Verify SL specifically — surface failure prominently
+  if (slTpResult) {
+    const slOk = slTpResult.sl?.orderId && !slTpResult.sl?.error;
+    if (!slOk) {
+      const slErr = slTpResult.sl?.error ?? "unknown error";
+      console.error(`[EXECUTOR] SL order FAILED on trade #${tradeId}: ${slErr}`);
+      logError("error", "EXECUTOR",
+        `CRITICAL: No SL on trade #${tradeId} ${signal.direction} ${signal.symbol} — BingX rejected SL order`,
+        { tradeId, slPrice: signal.sl, error: slErr, symbol: signal.symbol }
+      );
+    }
+    const tp1Ok = slTpResult.tp1?.orderId && !slTpResult.tp1?.error;
+    if (!tp1Ok) {
+      logWarn("EXECUTOR", `TP1 order failed on trade #${tradeId} ${signal.symbol}`,
+        { error: slTpResult.tp1?.error });
+    }
+  }
+
+  const entryLog = scaleOrders
+    .map((o) => `    Entry ${o.index} [${o.type ?? "?"}]: $${o.price?.toLocaleString()} → ${o.orderId ?? o.error ?? "?"}`)
     .join("\n");
 
   const slTpLog = slTpResult
-    ? `  SL: ${slTpResult.sl?.orderId ?? slTpResult.sl?.error ?? "?"} | ` +
-      `TP1: ${slTpResult.tp1?.orderId ?? "?"} | TP2: ${slTpResult.tp2?.orderId ?? "?"} | TP3: ${slTpResult.tp3?.orderId ?? "?"}`
-    : "  SL/TP placement skipped";
+    ? `  SL: ${slTpResult.sl?.orderId ?? ("FAILED: " + (slTpResult.sl?.error ?? "?"))} | ` +
+      `TP1: ${slTpResult.tp1?.orderId ?? slTpResult.tp1?.error ?? "?"} | ` +
+      `TP2: ${slTpResult.tp2?.orderId ?? "?"} | TP3: ${slTpResult.tp3?.orderId ?? "?"}`
+    : "  SL/TP: not attempted";
 
   console.log(
-    `[EXECUTOR] Trade #${tradeId} aberto: ${signal.direction} ${signal.symbol}\n` +
-    `  ${scaleEntries.length} entradas LIMIT (scale-in):\n${scaleLog}\n` +
-    `  Avg entry: $${avgEntry.toLocaleString()} | SL: $${signal.sl.toLocaleString()} | TP1: $${signal.tp1.toLocaleString()}\n` +
+    `[EXECUTOR] Trade #${tradeId}: ${signal.direction} ${signal.symbol}\n` +
+    `  Entries (${scaleOrders.length}):\n${entryLog}\n` +
+    `  Avg entry: $${avgEntry?.toLocaleString()} | SL: $${signal.sl?.toLocaleString()} | TP1: $${signal.tp1?.toLocaleString()}\n` +
     `  ${slTpLog}\n` +
-    `  Modo: ${config.paperTrade ? "PAPER" : "LIVE"}`
+    `  Mode: ${config.paperTrade ? "PAPER" : "LIVE"}`
   );
 
   return { success: true, tradeId, scaleOrders, slTpResult };

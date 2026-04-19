@@ -77,22 +77,48 @@ export async function generateSignal(symbol, technicalAnalysis, macroCache = nul
   // TPs are calculated from the AVERAGE entry price for accurate R:R
   const levels = calculateLevels(scaleResult.avgEntry, best.direction, slPct, best.tp_r);
 
-  // Position sizing: risk = 1% of capital, distance = avgEntry → scaleResult.slPrice
-  const sizing = calculatePositionSize(
-    scaleResult.avgEntry,
-    scaleResult.slPrice,
-    config.capitalUsdt,
-    config.maxRiskPct
-  );
+  // ── Per-entry sizing: each entry independently risks 1% of capital ──
+  // Size formula: risk_dollars / risk_per_unit
+  //   where risk_dollars  = capital × DAILY_RISK_PCT
+  //         risk_per_unit = abs(entry_i - sl_i)
+  //
+  // This means if ALL entries fill and hit their stops simultaneously,
+  // total loss = N × 1% = 3% (capped by daily limit after first stop).
+  //
+  // Cap: position value per entry ≤ CAPITAL_ALLOCATION_PCT × capital.
+  const riskDollars   = config.capitalUsdt * config.maxRiskPct; // 1% of capital
+  const allocationCap = config.capitalUsdt * (STRATEGY.CAPITAL_ALLOCATION_PCT ?? 0.20);
 
-  // Build per-entry breakdown (equal size split)
-  const partialSize  = parseFloat((sizing.positionSize / scale.ENTRIES).toFixed(6));
-  const scaleEntries = scaleResult.levels.map((entryPrice, i) => ({
-    index: i + 1,
-    price: entryPrice,
-    size:  partialSize,
-    value: parseFloat((partialSize * entryPrice).toFixed(2)),
-  }));
+  const scaleEntries = scaleResult.levels.map((entryPrice, i) => {
+    const sl          = scaleResult.slPrices[i];
+    const riskPerUnit = Math.abs(entryPrice - sl);
+    const rawSize     = riskPerUnit > 0 ? riskDollars / riskPerUnit : 0;
+    const rawValue    = rawSize * entryPrice;
+    // Cap to allocation slot
+    const cappedSize  = rawValue > allocationCap ? allocationCap / entryPrice : rawSize;
+
+    return {
+      index:    i + 1,
+      price:    entryPrice,
+      sl_price: sl,                                              // per-entry stop price
+      size:     parseFloat(cappedSize.toFixed(6)),
+      value:    parseFloat((cappedSize * entryPrice).toFixed(2)),
+    };
+  });
+
+  // Sizing summary (for dashboard display)
+  const totalSize  = scaleEntries.reduce((s, e) => s + e.size, 0);
+  const totalValue = scaleEntries.reduce((s, e) => s + e.value, 0);
+  const sizing = {
+    positionSize:     parseFloat(totalSize.toFixed(6)),
+    positionValue:    parseFloat(totalValue.toFixed(2)),
+    riskDollars:      parseFloat(riskDollars.toFixed(2)),
+    tradeCapital:     parseFloat(allocationCap.toFixed(2)),
+    riskPct:          (config.maxRiskPct * 100).toFixed(2),
+    riskPerEntry:     parseFloat(riskDollars.toFixed(2)),
+    totalMaxRisk:     parseFloat((riskDollars * scale.ENTRIES).toFixed(2)),
+    wasCapped:        scaleEntries.some((e) => e.value >= allocationCap * 0.99),
+  };
 
   // Append macro + market context to rationale
   const fullRationale = [...best.rationale];
@@ -104,39 +130,58 @@ export async function generateSignal(symbol, technicalAnalysis, macroCache = nul
   if (macro?.context?.overallBias) {
     fullRationale.push(`Macro bias (rules.json): ${macro.context.overallBias}`);
   }
+  // Add scale-in risk note to rationale
+  fullRationale.push(
+    `Scale-in: ${scale.ENTRIES} entries × $${riskDollars.toFixed(2)} risk each = ` +
+    `$${sizing.totalMaxRisk.toFixed(2)} max total if all stops hit simultaneously`
+  );
 
-  // Determine trade type from confidence + setup
-  const tradeType = best.confidence >= 85 ? "POSITION" : "SWING";
+  // Determine trade type — on 15min all setups are DAY trades
+  const TF = STRATEGY.TIMEFRAMES;
+  const tradeType = (TF.ENTRY_ANALYSIS === "15" || TF.ENTRY_ANALYSIS === "5")
+    ? "DAY"
+    : best.confidence >= 85 ? "POSITION" : "SWING";
+
+  // ── Signal SL: use first entry's individual SL for BingX stop order ──
+  // (tightest stop — guards against immediate adverse move on entry 1)
+  // Entries 2-N get their own stops placed as they fill (via monitor.js).
+  const firstEntrySl = scaleResult.slPrices[0];
+
+  // Recalculate TPs from first entry (market order price) for accuracy
+  const firstEntryLevels = calculateLevels(
+    scaleResult.levels[0], best.direction, slPct, best.tp_r
+  );
 
   return {
     symbol,
     direction:  best.direction,
-    score:      best.confidence,    // confidence = score for dashboard compat
+    score:      best.confidence,
     setup_id:   best.setup_id,
     setup_name: best.setup_name,
-    leverage,   // capped by per-symbol max
+    leverage,
     tradeType,
     rationale:  fullRationale,
 
     // Price levels
-    // entry   = first scale level (primary signal price)
-    // sl      = 1% below LAST scale entry (worst-case protection)
-    // tp1/2/3 = calculated from AVERAGE entry for accurate R:R
+    // entry    = first scale level price (market order)
+    // sl       = first entry's individual SL (tightest, for BingX stop)
+    // avg_entry = average of all scale levels (for display)
+    // tp1/2/3  = Fibonacci extensions from first entry
     price,
-    entry:    scaleResult.levels[0],    // first limit order price
-    avgEntry: scaleResult.avgEntry,     // used for TP calculation
-    sl:       scaleResult.slPrice,      // 1% below last scale entry
-    tp1:      levels.tp1.price,
-    tp2:      levels.tp2.price,
-    tp3:      levels.tp3.price,
+    entry:    scaleResult.levels[0],
+    avgEntry: scaleResult.avgEntry,
+    sl:       firstEntrySl,
+    tp1:      firstEntryLevels.tp1.price,
+    tp2:      firstEntryLevels.tp2.price,
+    tp3:      firstEntryLevels.tp3.price,
     tpDistribution: {
       tp1Pct: STRATEGY.TP_DISTRIBUTION.TP1,
       tp2Pct: STRATEGY.TP_DISTRIBUTION.TP2,
       tp3Pct: STRATEGY.TP_DISTRIBUTION.TP3,
     },
 
-    // Scale-in configuration
-    scaleEntries, // [{ index, price, size, value }, ...]
+    // Scale-in entries — each has its own sl_price (per-entry stop)
+    scaleEntries, // [{ index, price, sl_price, size, value }, ...]
     scaleConfig: {
       entries:    scale.ENTRIES,
       spacingPct: scale.SPACING_PCT,
@@ -144,7 +189,7 @@ export async function generateSignal(symbol, technicalAnalysis, macroCache = nul
       avgEntry:   scaleResult.avgEntry,
     },
 
-    // Position sizing (based on avgEntry → slPrice)
+    // Position sizing (aggregated across all entries)
     sizing,
 
     // Supporting data (shown in dashboard details)

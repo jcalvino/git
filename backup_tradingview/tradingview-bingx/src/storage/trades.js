@@ -169,9 +169,13 @@ export function recordPartialClose(tradeId, closeType, price, size) {
 }
 
 export function getOpenTrades() {
-  return db
-    .prepare(`SELECT * FROM trades WHERE status IN ('OPEN', 'PARTIAL') ORDER BY opened_at DESC`)
-    .all();
+  return db.prepare(`
+    SELECT t.*, p.unrealized_pnl, p.mark_price
+    FROM trades t
+    LEFT JOIN positions p ON p.trade_id = t.id
+    WHERE t.status IN ('OPEN', 'PARTIAL')
+    ORDER BY t.opened_at DESC
+  `).all();
 }
 
 export function getTrade(id) {
@@ -180,10 +184,18 @@ export function getTrade(id) {
 
 export function getTradeHistory(limit = 50, symbol = null) {
   const query = symbol
-    ? `SELECT * FROM trades WHERE symbol = ? ORDER BY opened_at DESC LIMIT ?`
-    : `SELECT * FROM trades ORDER BY opened_at DESC LIMIT ?`;
+    ? `SELECT t.*, s.setup_name, s.rationale, s.score as signal_score, s.breakdown
+       FROM trades t LEFT JOIN signals s ON t.signal_id = s.id
+       WHERE t.symbol = ? ORDER BY t.opened_at DESC LIMIT ?`
+    : `SELECT t.*, s.setup_name, s.rationale, s.score as signal_score, s.breakdown
+       FROM trades t LEFT JOIN signals s ON t.signal_id = s.id
+       ORDER BY t.opened_at DESC LIMIT ?`;
   const params = symbol ? [symbol, limit] : [limit];
-  return db.prepare(query).all(...params);
+  return db.prepare(query).all(...params).map((row) => ({
+    ...row,
+    rationale:  row.rationale  ? JSON.parse(row.rationale)  : [],
+    breakdown:  row.breakdown  ? JSON.parse(row.breakdown)  : {},
+  }));
 }
 
 // ── Positions ──────────────────────────────────────────────────
@@ -309,6 +321,59 @@ export function closeExternalTrade(tradeId) {
   db.prepare("DELETE FROM positions WHERE trade_id = ?").run(tradeId);
 }
 
+/**
+ * Close a bot-created trade that disappeared from BingX (SL/TP likely hit).
+ * Unlike closeExternalTrade, this works on any trade_type.
+ * P&L is taken from the last known unrealized_pnl (rough approximation).
+ */
+export function closeBotTradeFromSync(tradeId) {
+  const pos = db.prepare("SELECT unrealized_pnl FROM positions WHERE trade_id = ?").get(tradeId);
+  db.prepare(`
+    UPDATE trades SET
+      status = 'STOPPED',
+      close_reason = 'BINGX_CLOSED',
+      pnl = ?,
+      closed_at = datetime('now'),
+      updated_at = datetime('now')
+    WHERE id = ?
+  `).run(pos?.unrealized_pnl ?? null, tradeId);
+  db.prepare("DELETE FROM positions WHERE trade_id = ?").run(tradeId);
+}
+
+/**
+ * Delete all closed/stopped trades (and their signals).
+ * Used by the dashboard "Clear History" action.
+ * Open positions are NOT affected.
+ */
+export function clearClosedTrades() {
+  // Must delete child rows first to satisfy foreign key constraints:
+  //   trade_closes(trade_id) → trades(id)
+  //   positions(trade_id)    → trades(id)
+  //
+  // node:sqlite uses DatabaseSync which has no .transaction() helper —
+  // use explicit BEGIN/COMMIT instead.
+  const closedIds = db.prepare(
+    "SELECT id FROM trades WHERE status NOT IN ('OPEN', 'PARTIAL')"
+  ).all().map((r) => r.id);
+
+  if (closedIds.length === 0) return 0;
+
+  // Build a comma-separated placeholder string: ?,?,?
+  const ph = closedIds.map(() => "?").join(",");
+
+  db.exec("BEGIN");
+  try {
+    db.prepare(`DELETE FROM trade_closes WHERE trade_id IN (${ph})`).run(...closedIds);
+    db.prepare(`DELETE FROM positions   WHERE trade_id IN (${ph})`).run(...closedIds);
+    const result = db.prepare(`DELETE FROM trades WHERE id IN (${ph})`).run(...closedIds);
+    db.exec("COMMIT");
+    return result.changes;
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  }
+}
+
 export function updatePosition(tradeId, markPrice, unrealizedPnl) {
   db.prepare(`
     UPDATE positions SET
@@ -361,6 +426,55 @@ export function getSnapshots(days = 30) {
     )
     .all(days)
     .reverse(); // chronological order
+}
+
+// ── Daily Risk Limit ──────────────────────────────────────────
+
+/**
+ * Returns the sum of realized P&L for today's closed trades (UTC date).
+ * A negative value means net losses. Returns 0 if no trades closed today.
+ */
+export function getDailyPnl() {
+  const today = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
+  const row = db.prepare(`
+    SELECT COALESCE(SUM(pnl), 0) AS total
+    FROM trades
+    WHERE DATE(closed_at) = ? AND status IN ('CLOSED', 'STOPPED') AND pnl IS NOT NULL
+  `).get(today);
+  return row?.total ?? 0;
+}
+
+/**
+ * Returns true when today's realized losses have reached the daily limit.
+ * @param {number} capital    — current total capital in USDT
+ * @param {number} limitPct   — fraction of capital (default 0.01 = 1%)
+ */
+export function isDailyLimitReached(capital, limitPct = 0.01) {
+  if (!capital || capital <= 0) return false;
+  return getDailyPnl() <= -(capital * limitPct);
+}
+
+/**
+ * Returns the sum of realized PROFITS for today's closed trades (UTC date).
+ * Only counts positive P&L (winning trades). Returns 0 if none.
+ */
+export function getDailyProfit() {
+  const today = new Date().toISOString().slice(0, 10);
+  const row = db.prepare(`
+    SELECT COALESCE(SUM(pnl), 0) AS total
+    FROM trades
+    WHERE DATE(closed_at) = ? AND status IN ('CLOSED', 'STOPPED') AND pnl > 0
+  `).get(today);
+  return row?.total ?? 0;
+}
+
+/**
+ * Returns true when today's realized profit has reached the daily target.
+ * @param {number} targetAmount — fixed dollar amount (e.g. 10)
+ */
+export function isDailyTargetReached(targetAmount) {
+  if (!targetAmount || targetAmount <= 0) return false;
+  return getDailyProfit() >= targetAmount;
 }
 
 // ── Analytics ─────────────────────────────────────────────────

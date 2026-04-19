@@ -1,6 +1,10 @@
 // ─────────────────────────────────────────────────────────────────
 //  Technical Analysis Module
-//  Computes EMA200/D, EMA21/W, MACD/W, RSI/W from raw OHLCV bars.
+//  Computes EMA200, EMA21, MACD, RSI, StochRSI from raw OHLCV bars.
+//
+//  Timeframes are configurable via STRATEGY.TIMEFRAMES:
+//    ENTRY_ANALYSIS — primary TF (e.g. "15" for 15-min day trading)
+//    TREND_FILTER   — higher TF for trend direction (e.g. "60" for 1h)
 //
 //  No TradingView indicators required — works on any plan (free/paid).
 //  REQUIRES: TradingView Desktop running with CDP on :9222
@@ -8,70 +12,172 @@
 
 import { STRATEGY } from "../config/strategy.js";
 
+// Bar counts needed per timeframe to have enough history for indicators.
+// EMA200 needs at least 200 bars; we request extra for stability.
+const BAR_COUNTS = {
+  "1":   1000, // 1-min: 1000 bars ≈ 16 hours
+  "3":    800,
+  "5":    600,
+  "15":   600, // 15-min: 600 bars ≈ 6 days (enough for EMA200)
+  "30":   400,
+  "60":   300, // 1h: 300 bars ≈ 12 days
+  "240":  200, // 4h
+  "D":    250, // daily (250 trading days)
+  "W":    100, // weekly
+};
+const getBarCount = (tf) => BAR_COUNTS[tf] ?? 300;
+
+// ── Weekly Fixed Cache ─────────────────────────────────────────
+// Real weekly (W) indicators are always fetched on the "W" timeframe,
+// regardless of ENTRY_ANALYSIS / TREND_FILTER settings.
+// Cached 30 minutes — weekly candles barely change between 5-min scans.
+const _weeklyCache = new Map(); // symbol → { data, fetchedAt }
+const WEEKLY_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+async function _fetchWeeklyFixed(symbol, setTimeframe, getOhlcv) {
+  const cached = _weeklyCache.get(symbol);
+  if (cached && Date.now() - cached.fetchedAt < WEEKLY_CACHE_TTL_MS) {
+    return cached.data;
+  }
+  await setTimeframe("W");
+  const ohlcv  = await getOhlcv({ count: 100 });
+  const bars   = ohlcv.bars ?? [];
+  const closes = bars.map((b) => b.close);
+  const data = {
+    rsi:      calcRsi(closes, 14),
+    macd:     calcMacd(closes),
+    stochRsi: calcStochRsi(closes, 14, 14, 3, 3),
+    ema21:    calcEma(closes, 21),
+    barCount: bars.length,
+    timeframe: "W",
+  };
+  _weeklyCache.set(symbol, { data, fetchedAt: Date.now() });
+  return data;
+}
+
 /**
- * Analyze a symbol across daily and weekly timeframes.
- * All indicators are computed from raw OHLCV bars — no TradingView
- * indicators need to be added to the chart.
+ * Analyze a symbol using configurable timeframes from STRATEGY.TIMEFRAMES.
+ * All indicators are computed from raw OHLCV bars.
  *
- * @param {string} symbol — e.g. "BTCUSDT"
- * @param {object} mcpTools — adapter returned by createMcpAdapter()
+ * Returns `daily` / `weekly` shaped objects regardless of actual timeframe
+ * so all downstream consumers (setups, scoring) stay compatible.
+ *
+ * @param {string} symbol    — e.g. "BTCUSDT"
+ * @param {object} mcpTools  — adapter returned by createMcpAdapter()
  * @returns {TechnicalAnalysis}
  */
 export async function analyzeTechnical(symbol, mcpTools) {
   const { setSymbol, setTimeframe, getOhlcv, getQuote } = mcpTools;
 
+  const TF = STRATEGY.TIMEFRAMES;
+  const entryTf  = TF.ENTRY_ANALYSIS ?? "15";
+  const trendTf  = TF.TREND_FILTER   ?? "60";
+  const sameTf   = entryTf === trendTf;
+
   await setSymbol(symbol);
 
-  // ── Daily: 250 bars for EMA200 ─────────────────────────────────
-  await setTimeframe("D");
-  const [dailyOhlcv, dailyQuote] = await Promise.all([
-    getOhlcv({ count: 250 }),
+  // ── Primary timeframe (entry analysis — EMA200, RSI, MACD, bars) ─
+  await setTimeframe(entryTf);
+  const [entryOhlcv, entryQuote] = await Promise.all([
+    getOhlcv({ count: getBarCount(entryTf) }),
     getQuote(),
   ]);
 
-  const dailyBars = dailyOhlcv.bars ?? [];
-  const dailyCloses = dailyBars.map((b) => b.close);
-  const currentPrice = parseFloat(dailyQuote.last ?? dailyQuote.close ?? 0);
-  const ema200Value = calcEma(dailyCloses, 200);
+  const entryBars   = entryOhlcv.bars ?? [];
+  const entryCloses = entryBars.map((b) => b.close);
+  const currentPrice = parseFloat(entryQuote.last ?? entryQuote.close ?? 0);
 
-  // ── Weekly: 100 bars for EMA21, MACD(26+9), RSI(14) ───────────
-  await setTimeframe("W");
-  const weeklyOhlcv = await getOhlcv({ count: 100 });
-  const weeklyBars = weeklyOhlcv.bars ?? [];
-  const weeklyCloses = weeklyBars.map((b) => b.close);
+  const ema200Value    = calcEma(entryCloses, 200);
+  const entryEma9      = calcEma(entryCloses, 9);
+  const entryEma21     = calcEma(entryCloses, 21);
+  const entryEma50     = calcEma(entryCloses, 50);
+  const entryMacd      = calcMacd(entryCloses);
+  const entryRsi       = calcRsi(entryCloses, 14);
+  const entryStochRsi  = calcStochRsi(entryCloses, 14, 14, 3, 3);
 
-  const ema21Value = calcEma(weeklyCloses, 21);
-  const macdResult = calcMacd(weeklyCloses);
-  const rsiValue = calcRsi(weeklyCloses, 14);
-  const stochRsiResult = calcStochRsi(weeklyCloses, 14, 14, 3, 3);
+  // ── Trend filter timeframe (higher TF for direction confirmation) ─
+  let trendBars, trendCloses;
+  if (sameTf) {
+    // Same TF — reuse the data already fetched (no extra round trip)
+    trendBars   = entryBars;
+    trendCloses = entryCloses;
+  } else {
+    await setTimeframe(trendTf);
+    const trendOhlcv = await getOhlcv({ count: getBarCount(trendTf) });
+    trendBars   = trendOhlcv.bars ?? [];
+    trendCloses = trendBars.map((b) => b.close);
+  }
+
+  const trendEma9     = calcEma(trendCloses, 9);
+  const trendEma21    = calcEma(trendCloses, 21);
+  const trendEma50    = calcEma(trendCloses, 50);
+  const trendMacd     = calcMacd(trendCloses);
+  const trendRsi      = calcRsi(trendCloses, 14);
+  const trendStochRsi = calcStochRsi(trendCloses, 14, 14, 3, 3);
+
+  // ── Weekly fixed (real "W" candles — cached 30 min) ───────────
+  // RSI / MACD / StochRSI on the weekly TF are used ONLY as a
+  // directional bias filter, never as entry triggers.
+  const weeklyFixed = await _fetchWeeklyFixed(symbol, setTimeframe, getOhlcv);
 
   return {
     symbol,
-    timestamp: new Date().toISOString(),
-    price: currentPrice,
+    timestamp:  new Date().toISOString(),
+    price:      currentPrice,
+    timeframes: { entry: entryTf, trend: trendTf },
 
+    // "daily" field = primary entry timeframe (15min) data
     daily: {
-      ema200: ema200Value,
+      ema200:           ema200Value,
+      ema9:             entryEma9,
+      ema21:            entryEma21,
+      ema50:            entryEma50,
       priceAboveEma200: ema200Value !== null ? currentPrice > ema200Value : null,
-      barCount: dailyBars.length,
-      // Last 30 bars exposed for swing-high/low trendline detection (Setup 1)
-      bars: dailyBars.slice(-30).map((b) => ({
+      barCount:         entryBars.length,
+      timeframe:        entryTf,
+      // Last 60 bars for swing-high/low / reversal candle detection
+      bars: entryBars.slice(-60).map((b) => ({
         open: b.open, high: b.high, low: b.low, close: b.close, time: b.time,
       })),
     },
 
+    // "weekly" field = trend filter timeframe (1H) data
     weekly: {
-      ema21: ema21Value,
-      priceAboveEma21: ema21Value !== null ? currentPrice > ema21Value : null,
-      macd: macdResult,
-      rsi: rsiValue,
-      stochRsi: stochRsiResult,
-      barCount: weeklyBars.length,
+      ema9:            trendEma9,
+      ema21:           trendEma21,
+      ema50:           trendEma50,
+      priceAboveEma21: trendEma21 !== null ? currentPrice > trendEma21 : null,
+      macd:            trendMacd,
+      rsi:             trendRsi,
+      stochRsi:        trendStochRsi,
+      barCount:        trendBars.length,
+      timeframe:       trendTf,
+      // Last 50 bars for S/R level detection (Setup 3)
+      bars: trendBars.slice(-50).map((b) => ({
+        open: b.open, high: b.high, low: b.low, close: b.close, time: b.time,
+      })),
     },
 
+    // Entry-TF momentum (15min — for entry confirmation)
+    entry: {
+      ema9:     entryEma9,
+      ema21:    entryEma21,
+      ema50:    entryEma50,
+      macd:     entryMacd,
+      rsi:      entryRsi,
+      stochRsi: entryStochRsi,
+      barCount: entryBars.length,
+      timeframe: entryTf,
+    },
+
+    // Actual weekly (W) indicators — BIAS FILTER only, not entry triggers.
+    // RSI / MACD / StochRSI here tell us the macro weekly direction.
+    // If weekly is BEARISH → only SHORT setups fire; BULLISH → only LONG.
+    weeklyFixed,
+
     _raw: {
-      dailyCloses: dailyCloses.slice(-10),
-      weeklyCloses: weeklyCloses.slice(-10),
+      entryCloses: entryCloses.slice(-10),
+      trendCloses: trendCloses.slice(-10),
     },
   };
 }
@@ -88,33 +194,36 @@ export function scoreTechnical(analysis, direction) {
   const isLong = direction === "LONG";
   const { daily, weekly, price } = analysis;
 
-  // EMA 200 Daily (15 pts)
+  const entryTf = daily.timeframe  ?? "D";
+  const trendTf = weekly.timeframe ?? "W";
+
+  // EMA 200 on entry timeframe (15 pts)
   if (daily.ema200 !== null) {
     const above = price > daily.ema200;
     if ((isLong && above) || (!isLong && !above)) {
       score += w.EMA200_DAILY;
-      breakdown.ema200 = `+${w.EMA200_DAILY} (price ${above ? "above" : "below"} EMA200 D)`;
+      breakdown.ema200 = `+${w.EMA200_DAILY} (price ${above ? "above" : "below"} EMA200/${entryTf})`;
     } else {
-      breakdown.ema200 = `0 (price ${above ? "above" : "below"} EMA200 D — against ${direction})`;
+      breakdown.ema200 = `0 (price ${above ? "above" : "below"} EMA200/${entryTf} — against ${direction})`;
     }
   } else {
-    breakdown.ema200 = `0 (EMA200 — not enough daily bars: ${daily.barCount})`;
+    breakdown.ema200 = `0 (EMA200 — not enough bars on ${entryTf}: ${daily.barCount})`;
   }
 
-  // EMA 21 Weekly (10 pts)
+  // EMA 21 on trend timeframe (10 pts)
   if (weekly.ema21 !== null) {
     const above = price > weekly.ema21;
     if ((isLong && above) || (!isLong && !above)) {
       score += w.EMA21_WEEKLY;
-      breakdown.ema21 = `+${w.EMA21_WEEKLY} (price ${above ? "above" : "below"} EMA21 W)`;
+      breakdown.ema21 = `+${w.EMA21_WEEKLY} (price ${above ? "above" : "below"} EMA21/${trendTf})`;
     } else {
-      breakdown.ema21 = `0 (price ${above ? "above" : "below"} EMA21 W — against ${direction})`;
+      breakdown.ema21 = `0 (price ${above ? "above" : "below"} EMA21/${trendTf} — against ${direction})`;
     }
   } else {
-    breakdown.ema21 = `0 (EMA21 — not enough weekly bars: ${weekly.barCount})`;
+    breakdown.ema21 = `0 (EMA21 — not enough bars on ${trendTf}: ${weekly.barCount})`;
   }
 
-  // MACD Weekly (10 pts)
+  // MACD on trend timeframe (10 pts)
   if (weekly.macd !== null) {
     const { histogram, crossingUp, crossingDown } = weekly.macd;
     const bullish = histogram > 0 || crossingUp;
@@ -127,12 +236,12 @@ export function scoreTechnical(analysis, direction) {
         : crossingDown
         ? "crossing down"
         : `histogram ${histogram > 0 ? "positive" : "negative"}`;
-      breakdown.macd = `+${w.MACD_WEEKLY} (MACD W ${reason})`;
+      breakdown.macd = `+${w.MACD_WEEKLY} (MACD/${trendTf} ${reason})`;
     } else {
-      breakdown.macd = `0 (MACD W against ${direction})`;
+      breakdown.macd = `0 (MACD/${trendTf} against ${direction})`;
     }
   } else {
-    breakdown.macd = `0 (MACD — not enough weekly bars: ${weekly.barCount})`;
+    breakdown.macd = `0 (MACD — not enough bars on ${trendTf}: ${weekly.barCount})`;
   }
 
   // RSI Weekly (5 pts)

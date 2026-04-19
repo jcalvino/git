@@ -1,20 +1,42 @@
 // ─────────────────────────────────────────────────────────────────
 //  Setup Evaluators
-//  Each of the 5 named setups has its own trigger logic.
-//  Every evaluator returns a SetupResult explaining WHY a trade
-//  was entered — the rationale is shown in the dashboard before approval.
+//  Each of the 5 named setups has its own trigger logic designed
+//  specifically for 15min day trading with 1H trend context.
+//
+//  Setup architecture:
+//   Setup 1 — EMA Pullback Continuation (15min + 1H)
+//             Trend direction from 1H EMA9/21/50 stack.
+//             Entry when 15min price pulls back to EMA21 + reversal candle.
+//
+//   Setup 2 — STH Realized Price SHORT (BTC isolated rule)
+//             Fires SHORT when BTC price converges toward STH Realized Price.
+//
+//   Setup 3 — S/R Breakout + Retest (1H levels + 15min entry)
+//             Key horizontal S/R from 1H swing points. Enter at the
+//             "level flip" retest — highest institutional volume zone.
+//
+//   Setup 4 — Open Interest Confirmation Filter
+//             OI increasing = trend strengthening (boosts or confirms).
+//             OI decreasing = trend weakening (penalizes other setups).
+//
+//   Setup 5 — Liquidation Zone Accumulation (BTC only)
+//             Large liquidation cluster on one side → cascade hunt.
+//
+//  Weekly RSI / StochRSI / MACD are used ONLY as a direction bias
+//  filter (_computeWeeklyBias). They gate which direction is allowed —
+//  they do NOT trigger entries on their own.
 //
 //  SetupResult shape:
 //  {
-//    setup_id:    string,        // e.g. "TRENDLINE_BREAKOUT"
-//    setup_name:  string,        // human-readable name
-//    triggered:   boolean,       // true = setup conditions met
+//    setup_id:    string,
+//    setup_name:  string,
+//    triggered:   boolean,
 //    direction:   "LONG"|"SHORT"|null,
-//    confidence:  number,        // 0–100 (how strong the signal is)
-//    rationale:   string[],      // ordered list: strongest reason first
-//    leverage:    number,        // from SETUPS config
-//    sl_pct:      number,        // stop-loss distance as fraction of price
-//    tp_r:        object,        // TP R-multiples { tp1, tp2, tp3 }
+//    confidence:  number,        // 0–100
+//    rationale:   string[],
+//    leverage:    number,
+//    sl_pct:      number,
+//    tp_r:        object,        // { tp1, tp2, tp3 } R multiples
 //  }
 // ─────────────────────────────────────────────────────────────────
 
@@ -34,9 +56,9 @@ import { analyzeLiquidations } from "../analysis/liquidations.js";
  */
 export async function evaluateSetups(symbol, technical, onchain) {
   const results = await Promise.allSettled([
-    _evalTrendlineBreakout(symbol, technical),
+    _evalEmaPullback(symbol, technical),
     _evalSTHRealizedPrice(symbol, technical),
-    _evalRsiStochMacd(symbol, technical),
+    _evalSrBreakoutRetest(symbol, technical),
     _evalOIConfirmation(symbol, onchain, technical),
     _evalLiquidationZone(symbol, technical),
   ]);
@@ -60,155 +82,181 @@ export async function evaluateSetups(symbol, technical, onchain) {
   return triggered.sort((a, b) => b.confidence - a.confidence);
 }
 
-// ── Setup 1: Trendline Breakout + Retest ──────────────────────
-// Uses daily OHLCV bars to:
-// 1. Find swing highs/lows (local extrema) in the last 30 bars
-// 2. Fit a trendline (LTB through lower highs / LTA through higher lows)
-// 3. Check if price recently broke the trendline (within last 3 bars)
-// 4. Check if a retest of the broken line occurred
-// 5. Check for reversal candle (engulfing, hammer, shooting star)
+// ── Setup 1: EMA Pullback Continuation ────────────────────────
+// 1H EMA9/21/50 stack defines the trend.
+// 15min pullback to EMA21 + reversal candle = entry in trend direction.
+// Weekly RSI/MACD/StochRSI used only as a bias bonus/penalty.
 
-async function _evalTrendlineBreakout(symbol, technical) {
-  const cfg = SETUPS.TRENDLINE_BREAKOUT;
-  if (!cfg.enabled || !cfg.symbols.includes(symbol)) {
+async function _evalEmaPullback(symbol, technical) {
+  const cfg = SETUPS.EMA_PULLBACK;
+  if (!cfg.enabled || (cfg.symbols && !cfg.symbols.includes(symbol))) {
     return _notTriggered(cfg);
   }
 
-  const bars = technical.daily?.bars ?? [];
-  if (bars.length < 15) {
-    return _notTriggered(cfg, ["Barras diárias insuficientes para análise de tendência"]);
-  }
-
-  const price = technical.price;
+  const price    = technical.price;
+  const weekly   = technical.weekly;   // 1H timeframe
+  const entry15  = technical.entry;    // 15min indicators
+  const bars15   = technical.daily?.bars ?? [];
   const rationale = [];
-  let direction = null;
-  let confidence = 0;
 
-  // Find swing highs and lows
-  const swings = _findSwings(bars);
-  const { highs, lows } = swings;
+  // ── Step 1: 1H EMA stack determines trend ─────────────────────
+  const ema9_1h  = weekly.ema9;
+  const ema21_1h = weekly.ema21;
+  const ema50_1h = weekly.ema50;
 
-  // ── LTB detection (downtrend line through lower highs) ──────
-  const ltbResult = _fitTrendline(highs, bars.length);
-  // ── LTA detection (uptrend line through higher lows) ────────
-  const ltaResult = _fitTrendline(lows, bars.length);
-
-  // Check if price has crossed either trendline in the last 3 bars
-  const recentBars = bars.slice(-5);
-  const prevClose  = bars[bars.length - 4]?.close ?? price;
-
-  // LTB breakout (bearish line broke up → LONG)
-  if (ltbResult && ltbResult.direction === "DOWN") {
-    const ltbPriceNow  = _evalTrendlineAt(ltbResult, bars.length - 1);
-    const ltbPricePrev = _evalTrendlineAt(ltbResult, bars.length - 4);
-
-    if (ltbPricePrev !== null && prevClose < ltbPricePrev && price > ltbPriceNow) {
-      direction  = "LONG";
-      confidence += 35;
-      rationale.push(
-        `Rompimento de LTB (linha de tendência de baixa) confirmado: preço cruzou de $${ltbPricePrev?.toFixed(0)} → acima de $${ltbPriceNow?.toFixed(0)}`
-      );
-    }
+  if (!ema9_1h || !ema21_1h || !ema50_1h) {
+    return _notTriggered(cfg, [
+      "EMA9/21/50 no 1H indisponível — aguardando barras suficientes",
+    ]);
   }
 
-  // LTA breakout (bullish line broke down → SHORT)
-  if (!direction && ltaResult && ltaResult.direction === "UP") {
-    const ltaPriceNow  = _evalTrendlineAt(ltaResult, bars.length - 1);
-    const ltaPricePrev = _evalTrendlineAt(ltaResult, bars.length - 4);
+  const bullishStack = ema9_1h > ema21_1h && ema21_1h > ema50_1h;
+  const bearishStack = ema9_1h < ema21_1h && ema21_1h < ema50_1h;
 
-    if (ltaPricePrev !== null && prevClose > ltaPricePrev && price < ltaPriceNow) {
-      direction  = "SHORT";
-      confidence += 35;
-      rationale.push(
-        `Rompimento de LTA (linha de tendência de alta) confirmado: preço cruzou abaixo de $${ltaPriceNow?.toFixed(0)}`
-      );
-    }
+  if (!bullishStack && !bearishStack) {
+    return _notTriggered(cfg, [
+      `EMA Stack 1H sem tendência clara:`,
+      `  EMA9(${ema9_1h.toFixed(0)}) / EMA21(${ema21_1h.toFixed(0)}) / EMA50(${ema50_1h.toFixed(0)})`,
+      `Mercado em consolidação — aguardar alinhamento do stack para operar`,
+    ]);
   }
 
-  if (!direction) {
-    return _notTriggered(cfg, ["Nenhum rompimento de LTB/LTA detectado nas últimas barras"]);
+  const direction = bullishStack ? "LONG" : "SHORT";
+  const isLong    = direction === "LONG";
+  let confidence  = 0;
+
+  rationale.push(
+    `EMA Stack ${direction} confirmado no 1H: ` +
+    `EMA9(${ema9_1h.toFixed(0)}) ${isLong ? ">" : "<"} ` +
+    `EMA21(${ema21_1h.toFixed(0)}) ${isLong ? ">" : "<"} ` +
+    `EMA50(${ema50_1h.toFixed(0)}) ✓`
+  );
+  confidence += 40;
+
+  // ── Step 2: 15min price touching EMA21 ────────────────────────
+  // LONG: price pulling back TO the EMA21 from above (touching from bullish side)
+  // SHORT: price bouncing up TO the EMA21 from below
+  const ema21_15 = entry15?.ema21;
+  if (!ema21_15) {
+    return _notTriggered(cfg, [
+      ...rationale,
+      "EMA21 no 15min indisponível",
+    ]);
   }
 
-  // ── S/R horizontal check ────────────────────────────────────
-  // Last significant top (resistance) and bottom (support)
-  const lastHigh = highs[highs.length - 1];
-  const lastLow  = lows[lows.length - 1];
+  const distPct  = Math.abs((price - ema21_15) / ema21_15);
+  const touchPct = cfg.ema_touch_pct ?? 0.008;
 
-  if (direction === "LONG" && lastLow) {
-    const supportDist = Math.abs((price - lastLow.price) / price * 100);
-    if (supportDist < 3) {
-      confidence += 15;
-      rationale.push(
-        `Suporte horizontal confirmado no último fundo: $${lastLow.price.toFixed(0)} (${supportDist.toFixed(1)}% abaixo do preço atual)`
-      );
-    } else {
-      rationale.push(`Fundo relevante em $${lastLow.price.toFixed(0)} (${supportDist.toFixed(1)}% abaixo — suporte distante)`);
-    }
+  // Price must be within touch zone AND on the correct side
+  const withinTouch = distPct <= touchPct;
+  const correctSide = isLong
+    ? price <= ema21_15 * 1.012  // pulling back from above (up to 1.2% above EMA21)
+    : price >= ema21_15 * 0.988; // bouncing from below (up to 1.2% below EMA21)
+
+  if (!withinTouch || !correctSide) {
+    return _notTriggered(cfg, [
+      ...rationale,
+      `Tendência ${direction} confirmada no 1H, mas preço $${price.toFixed(0)} não está ` +
+      `no pullback ao EMA21/${technical.timeframes?.entry ?? "15min"} ($${ema21_15.toFixed(0)})`,
+      `Distância atual: ${(distPct * 100).toFixed(2)}% (zona de toque: ${(touchPct * 100).toFixed(1)}%)`,
+      `Aguardar pullback ao EMA21 para entrada de alta probabilidade`,
+    ]);
   }
 
-  if (direction === "SHORT" && lastHigh) {
-    const resDist = Math.abs((lastHigh.price - price) / price * 100);
-    if (resDist < 3) {
-      confidence += 15;
-      rationale.push(
-        `Resistência horizontal confirmada no último topo: $${lastHigh.price.toFixed(0)} (${resDist.toFixed(1)}% acima do preço atual)`
-      );
-    }
+  confidence += 25;
+  rationale.push(
+    `Toque no EMA21/${technical.timeframes?.entry ?? "15min"}: ` +
+    `preço $${price.toFixed(0)} vs EMA21 $${ema21_15.toFixed(0)} ` +
+    `(${(distPct * 100).toFixed(2)}% distância) ✓`
+  );
+
+  // ── Step 3: Reversal candle on 15min at the EMA21 ─────────────
+  const lastBar = bars15[bars15.length - 1];
+  const prevBar = bars15[bars15.length - 2];
+  const candle  = _detectReversalCandle(lastBar, prevBar, direction);
+
+  if (candle.found) {
+    confidence += 20;
+    rationale.push(`Vela de reversão no 15min: ${candle.type} ✓`);
+  } else {
+    rationale.push(
+      `Nenhuma vela de reversão clara no 15min — entrada de menor qualidade ` +
+      `(aguardar próxima barra para confirmação)`
+    );
   }
 
-  // ── Retest detection ────────────────────────────────────────
-  // Price came back close to the broken trendline after breakout
-  const trendlineNow = direction === "LONG"
-    ? _evalTrendlineAt(ltbResult, bars.length - 1)
-    : _evalTrendlineAt(ltaResult, bars.length - 1);
-
-  if (trendlineNow) {
-    const retestDist = Math.abs((price - trendlineNow) / trendlineNow * 100);
-    if (retestDist < 1.5) {
-      confidence += 25;
-      rationale.push(
-        `Reteste da linha rompida em andamento: preço atual $${price.toFixed(0)} vs. linha em $${trendlineNow.toFixed(0)} (${retestDist.toFixed(1)}% de distância)`
-      );
-    } else if (retestDist < 3) {
+  // ── Step 4: 1H RSI — not in extreme zone ──────────────────────
+  // If RSI > 75 on 1H during a LONG, the trend is overextended and a
+  // pullback buy is high-risk. Opposite for SHORT.
+  const rsi1h = weekly.rsi;
+  if (rsi1h !== null) {
+    const notExtreme = isLong ? rsi1h < 75 : rsi1h > 25;
+    if (notExtreme) {
       confidence += 10;
       rationale.push(
-        `Reteste próximo à linha rompida: ${retestDist.toFixed(1)}% de distância (tolerância 1.5%)`
+        `RSI 1H ${rsi1h.toFixed(1)} — sem sobreextensão ` +
+        `(${isLong ? "<75" : ">25"}) ✓`
       );
     } else {
-      rationale.push(`Sem reteste claro — preço ${retestDist.toFixed(1)}% afastado da linha rompida`);
+      confidence -= 20;
+      rationale.push(
+        `⚠ RSI 1H ${rsi1h.toFixed(1)} — ` +
+        `${isLong ? "sobrecomprado (>75)" : "sobrevendido (<25)"}: ` +
+        `pullback buy em overextension tem baixa probabilidade`
+      );
     }
   }
 
-  // ── Reversal candle check ───────────────────────────────────
-  const lastBar = bars[bars.length - 1];
-  const prevBar = bars[bars.length - 2];
-  const candleSignal = _detectReversalCandle(lastBar, prevBar, direction);
-  if (candleSignal.found) {
-    confidence += 20;
-    rationale.push(`Vela de reversão detectada: ${candleSignal.type} (${direction === "LONG" ? "bullish" : "bearish"})`);
+  // ── Step 5: Weekly bias from real weekly indicators ────────────
+  const wBias = _computeWeeklyBias(technical);
+  if (wBias.bias !== "NEUTRAL") {
+    const aligned = (isLong && wBias.bias === "BULLISH") ||
+                    (!isLong && wBias.bias === "BEARISH");
+    if (aligned) {
+      confidence += 10;
+      rationale.push(`Viés semanal ${wBias.bias}: alinhado com ${direction} ✓`);
+    } else {
+      confidence -= 15;
+      rationale.push(
+        `⚠ Viés semanal ${wBias.bias}: trade ${direction} vai CONTRA a tendência ` +
+        `semanal — risco elevado de falha no setup`
+      );
+    }
   } else {
-    rationale.push(`Nenhuma vela de reversão clara na barra atual — aguardar confirmação`);
+    rationale.push(`Viés semanal NEUTRO — sem bônus/penalidade direcional`);
   }
 
-  // EMA200 alignment (bonus context)
-  const ema200 = technical.daily.ema200;
-  if (ema200) {
-    const emaContext = direction === "LONG"
-      ? `Preço ${price > ema200 ? "acima" : "abaixo"} da EMA200 diária ($${ema200.toFixed(0)}) — ${price > ema200 ? "favorece" : "contra"} o setup LONG`
-      : `Preço ${price < ema200 ? "abaixo" : "acima"} da EMA200 diária ($${ema200.toFixed(0)}) — ${price < ema200 ? "favorece" : "contra"} o setup SHORT`;
-    rationale.push(emaContext);
-    if ((direction === "LONG" && price > ema200) || (direction === "SHORT" && price < ema200)) {
+  // ── EMA200 context (informational, small bonus) ────────────────
+  const ema200_15 = technical.daily?.ema200;
+  if (ema200_15) {
+    const above200 = price > ema200_15;
+    if ((isLong && above200) || (!isLong && !above200)) {
       confidence += 5;
+      rationale.push(
+        `EMA200/${technical.timeframes?.entry ?? "15min"} $${ema200_15.toFixed(0)}: ` +
+        `preço ${above200 ? "acima" : "abaixo"} — alinhado ✓`
+      );
+    } else {
+      rationale.push(
+        `EMA200/${technical.timeframes?.entry ?? "15min"} $${ema200_15.toFixed(0)}: ` +
+        `preço ${above200 ? "acima" : "abaixo"} — contra a direção (contexto informativo)`
+      );
     }
   }
 
-  const triggered = confidence >= 50; // Need breakout + at least retest OR candle
+  const triggered = confidence >= 55;
+  if (!triggered) {
+    rationale.push(
+      `Confiança ${confidence}% — abaixo do mínimo de 55% para este setup`
+    );
+  }
+
   return {
     setup_id:   cfg.id,
     setup_name: cfg.name,
     triggered,
     direction,
-    confidence: Math.min(confidence, 100),
+    confidence: Math.min(Math.max(confidence, 0), 100),
     rationale,
     leverage:   cfg.leverage,
     sl_pct:     cfg.sl_pct,
@@ -216,11 +264,14 @@ async function _evalTrendlineBreakout(symbol, technical) {
   };
 }
 
-// ── Setup 2: STH Realized Price Touch ─────────────────────────
+// ── Setup 2: STH Realized Price — ALWAYS SHORT ─────────────────
+// Isolated rule: fires as SHORT when BTC price converges toward
+// the STH Realized Price (yellow line on bitcoinmagazinepro.com).
+// 20x leverage, 10% SL — independent from all other strategy rules.
 
 async function _evalSTHRealizedPrice(symbol, technical) {
   const cfg = SETUPS.STH_REALIZED_PRICE;
-  if (!cfg.enabled || !cfg.symbols.includes(symbol)) {
+  if (!cfg.enabled || (cfg.symbols !== null && !cfg.symbols.includes(symbol))) {
     return _notTriggered(cfg);
   }
 
@@ -228,10 +279,12 @@ async function _evalSTHRealizedPrice(symbol, technical) {
   const sth   = await getSTHRealizedPrice(price);
   const rationale = [];
 
+  // ── STH price unavailable ─────────────────────────────────────
   if (!sth.price) {
     return _notTriggered(cfg, [
-      "STH Realized Price não disponível",
-      "Adicione manualmente em rules.json: { \"sth_realized_price\": <valor> }",
+      "STH Realized Price não disponível (CoinGlass + bitcoinmagazinepro.com falharam)",
+      "→ Adicione manualmente em rules.json: { \"sth_realized_price\": <valor_atual> }",
+      "   Consulte: https://www.bitcoinmagazinepro.com/charts/short-term-holder-realized-price/",
     ]);
   }
 
@@ -239,84 +292,78 @@ async function _evalSTHRealizedPrice(symbol, technical) {
     `STH Realized Price: $${sth.price.toLocaleString()} (fonte: ${sth.source})`
   );
   rationale.push(
-    `Preço atual $${price.toLocaleString()} está ${sth.touchProximityPct?.toFixed(2)}% ${sth.priceAbove ? "acima" : "abaixo"} da linha`
+    `BTC atual: $${price.toLocaleString()} — ${sth.touchProximityPct?.toFixed(2)}% ` +
+    `${sth.priceAbove ? "ACIMA" : "ABAIXO"} da linha amarela`
   );
+  if (sth.convergenceStatus) {
+    rationale.push(`Trajetória: ${sth.convergenceStatus}`);
+  }
+
+  const proximity = sth.touchProximityPct ?? 99;
+  const touchPct  = (cfg.touch_pct ?? 0.03) * 100;
 
   if (!sth.isNearLine) {
     return _notTriggered(cfg, [
       ...rationale,
-      `Proximidade ${sth.touchProximityPct?.toFixed(2)}% — threshold é ${(cfg.touch_pct * 100).toFixed(1)}%. Preço ainda longe da linha.`,
+      `Proximidade atual: ${proximity.toFixed(2)}% — threshold de entrada: ${touchPct.toFixed(1)}%.`,
+      `Setup ficará ativo quando BTC se aproximar mais ${(proximity - touchPct).toFixed(1)}% da linha.`,
     ]);
   }
 
-  // ── AVISO DE RISCO: 30x leverage ─────────────────────────────
-  // Com 30x, um movimento adverso de ~3.3% liquida a posição inteira.
-  // O setup só pode ser aprovado se a entrada for CIRÚRGICA:
-  // - Preço tocando a linha (não já afastado >0.5% dela)
-  // - Vela de reversão presente na barra atual
-  // Se esses critérios não forem atendidos, o setup NÃO dispara.
-  const lastDailyBar = technical.daily?.bars?.[technical.daily.bars.length - 1];
-  const prevDailyBar = technical.daily?.bars?.[technical.daily.bars.length - 2];
-  const entryProximity = sth.touchProximityPct ?? 99;
-
-  // Exigir que o preço ainda esteja dentro de 0.8% da linha (não "já passou")
-  if (entryProximity > 0.8) {
+  const convergePP = cfg.converge_threshold_pct ?? 2;
+  if (sth.historyLength >= 3 && !sth.isConverging && proximity > 0.5) {
     return _notTriggered(cfg, [
       ...rationale,
-      `⚠ Entrada não cirúrgica: preço já se afastou ${entryProximity.toFixed(2)}% da linha STH.`,
-      `Com ${cfg.leverage}x, movimentos de >3% liquidam a posição. Aguardar novo toque.`,
+      `Preço dentro dos ${touchPct.toFixed(1)}% mas SEM CONVERGÊNCIA ativa.`,
+      `Delta de proximidade: ${sth.proximityDelta?.toFixed(2) ?? "N/A"}pp ` +
+      `(precisa ≤−${convergePP}pp para confirmar).`,
+      `Aguardando que o preço mostre movimento direcional em direção à linha antes de entrar.`,
     ]);
   }
 
-  // Determinar direção
-  let direction = sth.priceAbove ? "LONG" : "SHORT";
-  let confidence = 70;
+  const direction = "SHORT";
+  let confidence  = 72;
 
-  // Verificar vela de reversão (obrigatória para 30x)
-  const candleOk = lastDailyBar && prevDailyBar
-    ? _detectReversalCandle(lastDailyBar, prevDailyBar, direction)
-    : { found: false };
+  rationale.push(
+    `⚡ CONVERGÊNCIA CONFIRMADA: BTC se aproximando da STH Realized Price ` +
+    `($${sth.price.toLocaleString()})`
+  );
+  rationale.push(
+    `TRADE ISOLADO — SHORT ${cfg.leverage}x | SL ${(cfg.sl_pct * 100).toFixed(0)}% acima da entrada`
+  );
 
-  if (!candleOk.found) {
-    return _notTriggered(cfg, [
-      ...rationale,
-      `⚠ Sem vela de reversão confirmada — entrada ${cfg.leverage}x BLOQUEADA.`,
-      `Com alavancagem de ${cfg.leverage}x, é obrigatório ter engulfing, hammer ou pin bar na barra atual antes de entrar.`,
-      `Aguardar fechamento da próxima barra diária para reavaliação.`,
-    ]);
-  }
-
-  confidence = 80;
   if (sth.priceAbove) {
-    rationale.push(`Preço tocando STH Realized Price como SUPORTE — bounce esperado para cima`);
-    rationale.push(`Vela de reversão confirmada: ${candleOk.type}`);
-    rationale.push(`SL ${(cfg.sl_pct * 100).toFixed(1)}% abaixo — rompimento da linha invalida o trade`);
+    confidence += 10;
+    rationale.push(`BTC acima da linha (resistência confirmada) — SHORT alinhado com posição relativa`);
   } else {
-    rationale.push(`Preço tocando STH Realized Price como RESISTÊNCIA — rejeição esperada`);
-    rationale.push(`Vela de reversão confirmada: ${candleOk.type}`);
-    rationale.push(`SL ${(cfg.sl_pct * 100).toFixed(1)}% acima — rompimento para cima invalida o trade`);
+    confidence += 5;
+    rationale.push(
+      `BTC abaixo da linha mas convergindo para ela — entrada antecipada ao toque para SHORT`
+    );
   }
 
-  // EMA200 context
   const ema200 = technical.daily?.ema200;
   if (ema200) {
-    const aligned = (direction === "LONG" && price > ema200) || (direction === "SHORT" && price < ema200);
+    const priceVsEma = price > ema200 ? "acima" : "abaixo";
     rationale.push(
-      `EMA200 diária em $${ema200.toFixed(0)} — ${aligned ? "alinhada ✓" : "⚠ CONTRA"} com a direção ${direction}`
+      `EMA200 (${technical.daily?.timeframe ?? "15"}min): $${ema200.toFixed(0)} — BTC está ${priceVsEma}. ` +
+      (price > ema200
+        ? `SHORT vai CONTRA a tendência de curto prazo — SL 10% dá margem.`
+        : `SHORT alinhado com fraqueza técnica ✓`)
     );
-    if (aligned) confidence += 10;
-    else {
-      confidence -= 15; // penalidade maior: 30x contra tendência é perigoso
-      rationale.push(`⚠ Setup 2 contra EMA200: risco elevado com ${cfg.leverage}x — confiança reduzida`);
-    }
+    if (price < ema200) confidence += 5;
   }
 
   rationale.push(
-    `Alavancagem ${cfg.leverage}x justificada pela precisão histórica do STH Realized Price como S/R de longo prazo`
+    `⚠ RISCO (${cfg.leverage}x, SL ${(cfg.sl_pct * 100).toFixed(0)}%): ` +
+    `posição dimensionada para max 1% de perda do capital`
   );
-  rationale.push(
-    `RISCO REAL: com ${cfg.leverage}x, movimento adverso de ${(100 / cfg.leverage).toFixed(1)}% = perda total da posição`
-  );
+
+  if (sth.historyLength) {
+    rationale.push(
+      `Monitor ativo há ${sth.historyLength} leituras (últimas ${sth.historyLength * 5}min)`
+    );
+  }
 
   return {
     setup_id:   cfg.id,
@@ -328,136 +375,179 @@ async function _evalSTHRealizedPrice(symbol, technical) {
     leverage:   cfg.leverage,
     sl_pct:     cfg.sl_pct,
     tp_r:       cfg.tp_r,
-    sthPrice:   sth.price,
+    sthPrice:          sth.price,
+    sthProximityPct:   proximity,
+    sthConverging:     sth.isConverging,
+    sthDelta:          sth.proximityDelta,
   };
 }
 
-// ── Setup 3: RSI + StochRSI + MACD Triple Alignment ───────────
+// ── Setup 3: S/R Breakout + Retest ────────────────────────────
+// Identifies horizontal support/resistance from 1H swing highs/lows.
+// Enters at the "level flip" retest on 15min — the point where
+// former resistance becomes support (or vice versa).
+//
+// Why not RSI/MACD/StochRSI here: those weekly indicators barely
+// move between 5-min scans and cannot time 15min entries. They belong
+// in the weekly bias filter only (_computeWeeklyBias).
 
-async function _evalRsiStochMacd(symbol, technical) {
-  const cfg = SETUPS.RSI_STOCH_MACD;
-  if (!cfg.enabled || !cfg.symbols.includes(symbol)) {
+async function _evalSrBreakoutRetest(symbol, technical) {
+  const cfg = SETUPS.SR_BREAKOUT_RETEST;
+  if (!cfg.enabled || (cfg.symbols && !cfg.symbols.includes(symbol))) {
     return _notTriggered(cfg);
   }
 
-  const weekly    = technical.weekly;
-  const rationale = [];
-  let score = 0;
-  let direction = null;
-  const votes = { LONG: 0, SHORT: 0 };
+  const price       = technical.price;
+  const trend1hBars = technical.weekly?.bars ?? [];
+  const entry15Bars = technical.daily?.bars  ?? [];
+  const rationale   = [];
 
-  // ── RSI ──────────────────────────────────────────────────────
-  if (weekly.rsi !== null) {
-    const rsi = weekly.rsi;
-    if (rsi > 50 && rsi < 75) {
-      votes.LONG++;
-      score += 30;
-      rationale.push(`RSI semanal ${rsi.toFixed(1)} — zona BULLISH (50–75): momentum de alta ativo`);
-    } else if (rsi < 50 && rsi > 25) {
-      votes.SHORT++;
-      score += 30;
-      rationale.push(`RSI semanal ${rsi.toFixed(1)} — zona BEARISH (25–50): momentum de baixa ativo`);
-    } else if (rsi >= 75) {
-      votes.SHORT += 0.5; // slight bearish (overbought)
-      rationale.push(`RSI semanal ${rsi.toFixed(1)} — sobrecomprado: possível reversão de baixa, mas confirmar`);
-    } else if (rsi <= 25) {
-      votes.LONG += 0.5; // slight bullish (oversold)
-      rationale.push(`RSI semanal ${rsi.toFixed(1)} — sobrevendido: possível reversão de alta, mas confirmar`);
-    } else {
-      rationale.push(`RSI semanal ${rsi.toFixed(1)} — zona neutra (50), sem viés claro`);
-    }
-  } else {
-    rationale.push("RSI semanal: dados insuficientes");
+  if (trend1hBars.length < 10) {
+    return _notTriggered(cfg, ["Barras do 1H insuficientes para detectar S/R (mín: 10)"]);
+  }
+  if (entry15Bars.length < 10) {
+    return _notTriggered(cfg, ["Barras do 15min insuficientes para confirmar breakout (mín: 10)"]);
   }
 
-  // ── StochRSI ─────────────────────────────────────────────────
-  const stoch = weekly.stochRsi;
-  if (stoch) {
-    if (stoch.crossingUp) {
-      votes.LONG++;
-      score += 35;
-      rationale.push(
-        `StochRSI semanal cruzando para CIMA: %K(${stoch.k}) cruzou acima %D(${stoch.d}) — sinal de compra`
-      );
-    } else if (stoch.crossingDown) {
-      votes.SHORT++;
-      score += 35;
-      rationale.push(
-        `StochRSI semanal cruzando para BAIXO: %K(${stoch.k}) cruzou abaixo %D(${stoch.d}) — sinal de venda`
-      );
-    } else if (stoch.k > stoch.d && !stoch.overbought) {
-      votes.LONG += 0.5;
-      score += 15;
-      rationale.push(`StochRSI semanal: %K(${stoch.k}) acima %D(${stoch.d}) — momentum de alta (sem cruzamento recente)`);
-    } else if (stoch.k < stoch.d && !stoch.oversold) {
-      votes.SHORT += 0.5;
-      score += 15;
-      rationale.push(`StochRSI semanal: %K(${stoch.k}) abaixo %D(${stoch.d}) — momentum de baixa (sem cruzamento recente)`);
-    } else {
-      rationale.push(`StochRSI semanal: ${stoch.overbought ? "sobrecomprado" : stoch.oversold ? "sobrevendido" : "sem sinal claro"} (%K=${stoch.k}, %D=${stoch.d})`);
-    }
-  } else {
-    rationale.push("StochRSI semanal: dados insuficientes (precisa de mais barras históricas)");
+  // ── Find swing highs/lows on 1H → horizontal S/R levels ───────
+  const swings1h = _findSwings(trend1hBars, 3);
+  const allLevels = [
+    ...swings1h.highs.map((s) => ({ price: s.price, type: "R" })),
+    ...swings1h.lows.map((s)  => ({ price: s.price, type: "S" })),
+  ].filter((l) => l.price > 0);
+
+  if (allLevels.length < 2) {
+    return _notTriggered(cfg, [
+      "S/R insuficiente no 1H — mercado sem estrutura de swing clara",
+    ]);
   }
 
-  // ── MACD Weekly ──────────────────────────────────────────────
-  const macd = weekly.macd;
-  if (macd) {
-    if (macd.crossingUp) {
-      votes.LONG++;
-      score += 35;
-      rationale.push(
-        `MACD semanal CRUZAMENTO DE ALTA: histograma mudou de negativo → positivo (${macd.histogram.toFixed(0)})`
-      );
-    } else if (macd.crossingDown) {
-      votes.SHORT++;
-      score += 35;
-      rationale.push(
-        `MACD semanal CRUZAMENTO DE BAIXA: histograma mudou de positivo → negativo (${macd.histogram.toFixed(0)})`
-      );
-    } else if (macd.histogram > 0) {
-      votes.LONG += 0.5;
-      score += 15;
-      rationale.push(`MACD semanal: histograma positivo (${macd.histogram.toFixed(0)}) — tendência de alta em vigor`);
-    } else {
-      votes.SHORT += 0.5;
-      score += 15;
-      rationale.push(`MACD semanal: histograma negativo (${macd.histogram.toFixed(0)}) — tendência de baixa em vigor`);
-    }
-  } else {
-    rationale.push("MACD semanal: dados insuficientes");
+  const tolerance = cfg.retest_tolerance_pct ?? 0.015;
+
+  // Nearest level(s) to current price
+  const nearbyLevels = allLevels
+    .map((l) => ({ ...l, dist: Math.abs((price - l.price) / l.price) }))
+    .filter((l) => l.dist <= tolerance * 3) // within 4.5%
+    .sort((a, b) => a.dist - b.dist);
+
+  if (!nearbyLevels.length) {
+    return _notTriggered(cfg, [
+      `Nenhum nível S/R do 1H próximo ao preço atual ($${price.toFixed(0)})`,
+      `Últimos níveis: ${allLevels.slice(-5).map((l) => `$${l.price.toFixed(0)} (${l.type})`).join(", ")}`,
+    ]);
   }
 
-  // ── Decision ─────────────────────────────────────────────────
-  direction = votes.LONG >= votes.SHORT ? "LONG" : "SHORT";
-  const alignment = votes[direction] / (votes.LONG + votes.SHORT || 1);
+  const nearLevel = nearbyLevels[0];
 
-  // Need at least 2 of 3 indicators aligned AND at least one crossover
-  const crossovers = (stoch?.crossingUp || stoch?.crossingDown ? 1 : 0) +
-                     (macd?.crossingUp  || macd?.crossingDown  ? 1 : 0);
-  const hasMinIndicators = votes[direction] >= 2;
-  const triggered = hasMinIndicators && crossovers >= 1;
+  // ── Detect 15min breakout: majority of recent bars on one side ─
+  const recent15 = entry15Bars.slice(-10);
+  const closesAbove = recent15.filter((b) => b.close > nearLevel.price).length;
+  const closesBelow = recent15.filter((b) => b.close < nearLevel.price).length;
 
-  if (!triggered) {
+  // Need ≥6 of last 10 bars on the new side AND last 2 bars confirm
+  const lastTwo = recent15.slice(-2);
+  const brokeAbove =
+    closesAbove >= 6 && lastTwo.every((b) => b.close > nearLevel.price);
+  const brokeBelow =
+    closesBelow >= 6 && lastTwo.every((b) => b.close < nearLevel.price);
+
+  if (!brokeAbove && !brokeBelow) {
+    return _notTriggered(cfg, [
+      `Nível S/R encontrado: $${nearLevel.price.toFixed(0)} (${nearLevel.type}, ` +
+      `${(nearLevel.dist * 100).toFixed(2)}% do preço)`,
+      `Sem breakout confirmado — ` +
+      `${closesAbove} barras acima / ${closesBelow} barras abaixo do nível`,
+      `Aguardar fechamento limpo (6+ barras) de um lado para ativar o setup`,
+    ]);
+  }
+
+  const direction   = brokeAbove ? "LONG" : "SHORT";
+  const isLong      = direction === "LONG";
+  const breakSide   = isLong ? "ACIMA" : "ABAIXO";
+  let confidence    = 0;
+
+  rationale.push(
+    `Rompimento ${breakSide} do nível $${nearLevel.price.toFixed(0)} ` +
+    `(${nearLevel.type}) confirmado no 15min: ` +
+    `${isLong ? closesAbove : closesBelow}/10 barras na nova direção ✓`
+  );
+  confidence += 35;
+
+  // ── Retest: price returned to the broken level ─────────────────
+  const isRetesting = nearLevel.dist <= tolerance;
+
+  if (!isRetesting) {
+    // Broken but not yet retested — log progress, don't trigger yet
+    return _notTriggered(cfg, [
+      ...rationale,
+      `Rompimento ok, mas SEM reteste ainda — preço $${price.toFixed(0)} ` +
+      `está ${(nearLevel.dist * 100).toFixed(2)}% do nível $${nearLevel.price.toFixed(0)}`,
+      `Aguardar pullback ao nível rompido para entrada de alta probabilidade`,
+    ]);
+  }
+
+  confidence += 30;
+  rationale.push(
+    `Reteste em andamento: preço $${price.toFixed(0)} voltou ao nível ` +
+    `$${nearLevel.price.toFixed(0)} (${(nearLevel.dist * 100).toFixed(2)}%) ✓`
+  );
+
+  // ── Reversal candle on 15min at the retest ─────────────────────
+  const lastBar = entry15Bars[entry15Bars.length - 1];
+  const prevBar = entry15Bars[entry15Bars.length - 2];
+  const candle  = _detectReversalCandle(lastBar, prevBar, direction);
+
+  if (candle.found) {
+    confidence += 20;
+    rationale.push(`Vela de reversão no reteste: ${candle.type} ✓`);
+  } else {
     rationale.push(
-      crossovers === 0
-        ? "Sem cruzamento ativo no StochRSI ou MACD — aguardar mudança de cor"
-        : `Apenas ${Math.floor(votes[direction])} de 3 indicadores alinhados — confluência insuficiente`
-    );
-  } else {
-    rationale.unshift(
-      `TRIPLE CONFLUÊNCIA ${direction}: ${crossovers} cruzamento(s) ativo(s) + ${Math.floor(votes[direction])} indicadores alinhados`
+      `Nenhuma vela de reversão clara no reteste — aguardar próxima barra (entrada de menor qualidade)`
     );
   }
 
-  const confidence = triggered ? Math.min(Math.round(score * alignment), 100) : 0;
+  // ── EMA200 alignment ───────────────────────────────────────────
+  const ema200 = technical.daily?.ema200;
+  if (ema200) {
+    const above200 = price > ema200;
+    if ((isLong && above200) || (!isLong && !above200)) {
+      confidence += 10;
+      rationale.push(
+        `EMA200 $${ema200.toFixed(0)}: preço ${above200 ? "acima" : "abaixo"} — alinhado com ${direction} ✓`
+      );
+    } else {
+      rationale.push(
+        `EMA200 $${ema200.toFixed(0)}: preço ${above200 ? "acima" : "abaixo"} — ` +
+        `contra o trade (confirmar outros fatores antes de entrar)`
+      );
+    }
+  }
+
+  // ── Weekly bias bonus/penalty ──────────────────────────────────
+  const wBias = _computeWeeklyBias(technical);
+  if (wBias.bias !== "NEUTRAL") {
+    const aligned = (isLong && wBias.bias === "BULLISH") ||
+                    (!isLong && wBias.bias === "BEARISH");
+    if (aligned) {
+      confidence += 10;
+      rationale.push(`Viés semanal ${wBias.bias}: alinhado com ${direction} ✓`);
+    } else {
+      confidence -= 10;
+      rationale.push(`⚠ Viés semanal ${wBias.bias}: trade ${direction} vai CONTRA a tendência semanal`);
+    }
+  }
+
+  const triggered = confidence >= 60;
+  if (!triggered) {
+    rationale.push(`Confiança ${confidence}% — mínimo 60% para este setup`);
+  }
 
   return {
     setup_id:   cfg.id,
     setup_name: cfg.name,
     triggered,
     direction,
-    confidence,
+    confidence: Math.min(Math.max(confidence, 0), 100),
     rationale,
     leverage:   cfg.leverage,
     sl_pct:     cfg.sl_pct,
@@ -472,7 +562,7 @@ async function _evalRsiStochMacd(symbol, technical) {
 
 async function _evalOIConfirmation(symbol, onchain, technical) {
   const cfg = SETUPS.OI_CONFIRMATION;
-  if (!cfg.enabled || !cfg.symbols.includes(symbol)) {
+  if (!cfg.enabled || (cfg.symbols !== null && !cfg.symbols.includes(symbol))) {
     return _notTriggered(cfg);
   }
 
@@ -484,23 +574,17 @@ async function _evalOIConfirmation(symbol, onchain, technical) {
   const rationale = [];
   let direction   = null;
   let confidence  = 0;
-  let oiStrength  = "NEUTRAL"; // exposed for applyOiFilter
+  let oiStrength  = "NEUTRAL";
 
-  // OI change in 24h (requires current + previous OI)
   const oiChange = oi.change24hPct ?? oi.changePct ?? null;
-
   if (oiChange === null) {
     return _notTriggered(cfg, ["Variação de OI (24h) não disponível na fonte de dados"]);
   }
 
-  const absChange = Math.abs(oiChange);
-
   if (oiChange > cfg.oi_change_threshold) {
-    // OI increasing — trend strengthening
     oiStrength = "STRONG";
     confidence += 40;
 
-    // Determine direction from price trend (EMA alignment)
     const ema200 = technical.daily?.ema200;
     const ema21w = technical.weekly?.ema21;
     const price  = technical.price;
@@ -509,19 +593,22 @@ async function _evalOIConfirmation(symbol, onchain, technical) {
       direction = "LONG";
       confidence += 30;
       rationale.push(`OI aumentou +${oiChange.toFixed(2)}% (24h) — tendência de ALTA sendo fortalecida`);
-      rationale.push(`Preço $${price.toFixed(0)} acima da EMA200 diária ($${ema200.toFixed(0)}) confirma direção LONG`);
+      rationale.push(`Preço $${price.toFixed(0)} acima da EMA200 ($${ema200.toFixed(0)}) confirma direção LONG`);
     } else if (ema200 && price < ema200) {
       direction = "SHORT";
       confidence += 30;
       rationale.push(`OI aumentou +${oiChange.toFixed(2)}% (24h) — tendência de BAIXA sendo fortalecida`);
-      rationale.push(`Preço $${price.toFixed(0)} abaixo da EMA200 diária ($${ema200.toFixed(0)}) confirma direção SHORT`);
+      rationale.push(`Preço $${price.toFixed(0)} abaixo da EMA200 ($${ema200.toFixed(0)}) confirma direção SHORT`);
     } else {
       rationale.push(`OI aumentou +${oiChange.toFixed(2)}% — sem EMA200 para confirmar direção`);
     }
 
     if (ema21w) {
       const above = technical.price > ema21w;
-      rationale.push(`EMA21 semanal em $${ema21w.toFixed(0)} — preço ${above ? "acima" : "abaixo"} (${above ? "bullish" : "bearish"})`);
+      rationale.push(
+        `EMA21 1H em $${ema21w.toFixed(0)} — preço ${above ? "acima" : "abaixo"} ` +
+        `(${above ? "bullish" : "bearish"})`
+      );
       if ((direction === "LONG" && above) || (direction === "SHORT" && !above)) confidence += 10;
     }
 
@@ -550,7 +637,7 @@ async function _evalOIConfirmation(symbol, onchain, technical) {
   }
 
   const triggered = cfg.filterOnly
-    ? false // filter-only: never generates standalone signals
+    ? false
     : (direction !== null && confidence >= 60);
 
   return {
@@ -572,7 +659,7 @@ async function _evalOIConfirmation(symbol, onchain, technical) {
 
 async function _evalLiquidationZone(symbol, technical) {
   const cfg = SETUPS.LIQUIDATION_ZONE;
-  if (!cfg.enabled || !cfg.symbols.includes(symbol)) {
+  if (!cfg.enabled || (cfg.symbols !== null && !cfg.symbols.includes(symbol))) {
     return _notTriggered(cfg);
   }
 
@@ -587,7 +674,6 @@ async function _evalLiquidationZone(symbol, technical) {
     return _notTriggered(cfg, liq.rationale);
   }
 
-  // Check minimum dominance threshold
   const dominantRatio = liq.signal === "LONG" ? liq.aboveRatio : (1 - liq.aboveRatio);
   if (dominantRatio < cfg.zone_dominance_threshold) {
     return _notTriggered(cfg, [
@@ -596,7 +682,6 @@ async function _evalLiquidationZone(symbol, technical) {
     ]);
   }
 
-  // Confidence based on how dominant the cluster is
   const confidence = Math.min(
     Math.round(50 + (dominantRatio - cfg.zone_dominance_threshold) * 200),
     95
@@ -604,12 +689,12 @@ async function _evalLiquidationZone(symbol, technical) {
 
   const rationale = [...liq.rationale];
 
-  // Add EMA context
   const ema200 = technical.daily?.ema200;
   if (ema200) {
-    const aligned = (liq.direction === "LONG" && price > ema200) || (liq.direction === "SHORT" && price < ema200);
+    const aligned = (liq.direction === "LONG" && price > ema200) ||
+                    (liq.direction === "SHORT" && price < ema200);
     rationale.push(
-      `EMA200 diária $${ema200.toFixed(0)}: ${aligned ? "confirma" : "CONTRA"} a direção ${liq.direction}`
+      `EMA200 $${ema200.toFixed(0)}: ${aligned ? "confirma" : "CONTRA"} a direção ${liq.direction}`
     );
   }
 
@@ -624,11 +709,11 @@ async function _evalLiquidationZone(symbol, technical) {
     sl_pct:     cfg.sl_pct,
     tp_r:       cfg.tp_r,
     liqData: {
-      aboveTotal:     liq.aboveTotal,
-      belowTotal:     liq.belowTotal,
-      aboveRatio:     liq.aboveRatio,
-      topAbovePrice:  liq.topAbovePrice,
-      topBelowPrice:  liq.topBelowPrice,
+      aboveTotal:    liq.aboveTotal,
+      belowTotal:    liq.belowTotal,
+      aboveRatio:    liq.aboveRatio,
+      topAbovePrice: liq.topAbovePrice,
+      topBelowPrice: liq.topBelowPrice,
     },
   };
 }
@@ -642,10 +727,9 @@ function _applyOiFilter(setupResult, oiResult) {
   const sameDirection = oiResult.direction === setupResult.direction;
 
   if (oiResult.oiStrength === "STRONG" && sameDirection) {
-    const boost = Math.min(setupResult.confidence + 10, 100);
     return {
       ...setupResult,
-      confidence: boost,
+      confidence: Math.min(setupResult.confidence + 10, 100),
       rationale: [
         ...setupResult.rationale,
         `Setup 4 confirma: OI subiu +${oiResult.oiChange?.toFixed(2)}% — tendência fortalecida (+10 confiança)`,
@@ -654,10 +738,9 @@ function _applyOiFilter(setupResult, oiResult) {
   }
 
   if (oiResult.oiStrength === "STRONG" && !sameDirection) {
-    const penalized = Math.max(setupResult.confidence - 20, 0);
     return {
       ...setupResult,
-      confidence: penalized,
+      confidence: Math.max(setupResult.confidence - 20, 0),
       rationale: [
         ...setupResult.rationale,
         `⚠ Setup 4 CONTRA: OI subindo na direção oposta — tendência contrária (-20 confiança)`,
@@ -666,10 +749,9 @@ function _applyOiFilter(setupResult, oiResult) {
   }
 
   if (oiResult.oiStrength === "WEAK") {
-    const penalized = Math.max(setupResult.confidence - 15, 0);
     return {
       ...setupResult,
-      confidence: penalized,
+      confidence: Math.max(setupResult.confidence - 15, 0),
       rationale: [
         ...setupResult.rationale,
         `⚠ Setup 4 alerta: OI caindo ${oiResult.oiChange?.toFixed(2)}% — tendência enfraquecendo (-15 confiança)`,
@@ -680,6 +762,69 @@ function _applyOiFilter(setupResult, oiResult) {
   return setupResult;
 }
 
+// ── Weekly Bias Computation ────────────────────────────────────
+/**
+ * Compute directional bias from real weekly RSI / MACD / StochRSI.
+ * These indicators are ONLY used as a directional gate/bonus here —
+ * NOT as entry triggers. They answer: "does the weekly macro support this direction?"
+ *
+ * Returns { bias: "BULLISH"|"BEARISH"|"NEUTRAL", bullScore, bearScore, reasons[] }
+ */
+function _computeWeeklyBias(technical) {
+  const wk = technical.weeklyFixed;
+  if (!wk) return { bias: "NEUTRAL", bullScore: 0, bearScore: 0, reasons: ["Weekly data unavailable"] };
+
+  let bullScore = 0;
+  let bearScore = 0;
+  const reasons = [];
+
+  // RSI Weekly
+  if (wk.rsi !== null) {
+    if (wk.rsi > 55) {
+      bullScore++;
+      reasons.push(`RSI W ${wk.rsi.toFixed(1)} > 55 (momentum bullish)`);
+    } else if (wk.rsi < 45) {
+      bearScore++;
+      reasons.push(`RSI W ${wk.rsi.toFixed(1)} < 45 (momentum bearish)`);
+    } else {
+      reasons.push(`RSI W ${wk.rsi.toFixed(1)} neutro (45–55)`);
+    }
+  }
+
+  // MACD Weekly
+  if (wk.macd) {
+    const { histogram, crossingUp, crossingDown } = wk.macd;
+    if (histogram > 0 || crossingUp) {
+      bullScore++;
+      reasons.push(`MACD W positivo (hist: ${histogram?.toFixed(0) ?? "?"})${crossingUp ? " — cruzamento de alta!" : ""}`);
+    } else if (histogram < 0 || crossingDown) {
+      bearScore++;
+      reasons.push(`MACD W negativo (hist: ${histogram?.toFixed(0) ?? "?"})${crossingDown ? " — cruzamento de baixa!" : ""}`);
+    }
+  }
+
+  // StochRSI Weekly
+  if (wk.stochRsi) {
+    const { k, d, crossingUp, crossingDown, overbought, oversold } = wk.stochRsi;
+    if (crossingUp || (k > d && !overbought)) {
+      bullScore++;
+      reasons.push(`StochRSI W %K(${k}) > %D(${d})${crossingUp ? " — cruzamento bullish!" : ""}`);
+    } else if (crossingDown || (k < d && !oversold)) {
+      bearScore++;
+      reasons.push(`StochRSI W %K(${k}) < %D(${d})${crossingDown ? " — cruzamento bearish!" : ""}`);
+    } else {
+      reasons.push(`StochRSI W ${overbought ? "sobrecomprado" : oversold ? "sobrevendido" : "neutro"} (%K=${k}, %D=${d})`);
+    }
+  }
+
+  // Need 2 of 3 indicators aligned for a clear bias
+  let bias = "NEUTRAL";
+  if (bullScore >= 2) bias = "BULLISH";
+  else if (bearScore >= 2) bias = "BEARISH";
+
+  return { bias, bullScore, bearScore, reasons };
+}
+
 // ── Swing High/Low Detection ───────────────────────────────────
 
 function _findSwings(bars, lookback = 3) {
@@ -687,55 +832,18 @@ function _findSwings(bars, lookback = 3) {
   const lows  = [];
 
   for (let i = lookback; i < bars.length - lookback; i++) {
-    const isSwingHigh = bars.slice(i - lookback, i).every((b) => b.high <= bars[i].high) &&
-                        bars.slice(i + 1, i + lookback + 1).every((b) => b.high <= bars[i].high);
-    const isSwingLow  = bars.slice(i - lookback, i).every((b) => b.low >= bars[i].low) &&
-                        bars.slice(i + 1, i + lookback + 1).every((b) => b.low >= bars[i].low);
+    const isSwingHigh =
+      bars.slice(i - lookback, i).every((b) => b.high <= bars[i].high) &&
+      bars.slice(i + 1, i + lookback + 1).every((b) => b.high <= bars[i].high);
+    const isSwingLow =
+      bars.slice(i - lookback, i).every((b) => b.low >= bars[i].low) &&
+      bars.slice(i + 1, i + lookback + 1).every((b) => b.low >= bars[i].low);
 
     if (isSwingHigh) highs.push({ idx: i, price: bars[i].high });
     if (isSwingLow)  lows.push({ idx: i, price: bars[i].low });
   }
 
   return { highs, lows };
-}
-
-// ── Linear Trendline Fitting ───────────────────────────────────
-// Fits a line through swing points using linear regression.
-// Returns { slope, intercept, direction: "UP"|"DOWN", r2 } or null.
-
-function _fitTrendline(points, totalBars) {
-  if (points.length < 2) return null;
-
-  // Use last 3 relevant swing points
-  const pts = points.slice(-3);
-  const n   = pts.length;
-  const sumX  = pts.reduce((s, p) => s + p.idx, 0);
-  const sumY  = pts.reduce((s, p) => s + p.price, 0);
-  const sumXY = pts.reduce((s, p) => s + p.idx * p.price, 0);
-  const sumX2 = pts.reduce((s, p) => s + p.idx * p.idx, 0);
-
-  const slope     = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
-  const intercept = (sumY - slope * sumX) / n;
-
-  // R² for quality check
-  const meanY = sumY / n;
-  const ss_tot = pts.reduce((s, p) => s + (p.price - meanY) ** 2, 0);
-  const ss_res = pts.reduce((s, p) => s + (p.price - (slope * p.idx + intercept)) ** 2, 0);
-  const r2 = ss_tot > 0 ? 1 - ss_res / ss_tot : 0;
-
-  if (r2 < 0.7) return null; // poor fit — ignore this trendline
-
-  return {
-    slope,
-    intercept,
-    direction: slope > 0 ? "UP" : "DOWN",
-    r2: parseFloat(r2.toFixed(3)),
-  };
-}
-
-function _evalTrendlineAt(line, barIdx) {
-  if (!line) return null;
-  return line.slope * barIdx + line.intercept;
 }
 
 // ── Reversal Candle Detection ──────────────────────────────────
@@ -749,30 +857,24 @@ function _detectReversalCandle(bar, prevBar, direction) {
   const lowerWick = Math.min(bar.open, bar.close) - bar.low;
 
   if (direction === "LONG") {
-    // Bullish engulfing
     if (bar.close > bar.open && bar.open < prevBar.close && bar.close > prevBar.open) {
       return { found: true, type: "Engulfing de alta" };
     }
-    // Hammer (long lower wick, small body at top)
     if (lowerWick > bodySize * 2 && upperWick < bodySize * 0.5) {
       return { found: true, type: "Martelo (hammer)" };
     }
-    // Bullish pin bar (close near high)
     if (lowerWick > totalSize * 0.6 && bar.close > bar.open) {
       return { found: true, type: "Pin bar de alta" };
     }
   }
 
   if (direction === "SHORT") {
-    // Bearish engulfing
     if (bar.close < bar.open && bar.open > prevBar.close && bar.close < prevBar.open) {
       return { found: true, type: "Engulfing de baixa" };
     }
-    // Shooting star
     if (upperWick > bodySize * 2 && lowerWick < bodySize * 0.5) {
       return { found: true, type: "Shooting star" };
     }
-    // Bearish pin bar
     if (upperWick > totalSize * 0.6 && bar.close < bar.open) {
       return { found: true, type: "Pin bar de baixa" };
     }

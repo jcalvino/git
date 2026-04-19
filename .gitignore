@@ -1,0 +1,17 @@
+backup_tradingview/tradingview-bingx/package.json
+backup_tradingview/tradingview-bingx/rules.json
+backup_tradingview/tradingview-bingx/dashboard/src/App.jsx
+backup_tradingview/tradingview-bingx/dashboard/src/components/OnChainPanel.jsx
+backup_tradingview/tradingview-bingx/dashboard/src/components/OpenPositions.jsx
+backup_tradingview/tradingview-bingx/dashboard/src/components/TradeHistory.jsx
+backup_tradingview/tradingview-bingx/dashboard/src/hooks/useLiveData.js
+backup_tradingview/tradingview-bingx/src/analysis/sth_price.js
+backup_tradingview/tradingview-bingx/src/analysis/technical.js
+backup_tradingview/tradingview-bingx/src/api/server.js
+backup_tradingview/tradingview-bingx/src/bot/executor.js
+backup_tradingview/tradingview-bingx/src/bot/scanner.js
+backup_tradingview/tradingview-bingx/src/config/strategy.js
+backup_tradingview/tradingview-bingx/src/storage/trades.js
+backup_tradingview/tradingview-bingx/src/strategy/risk.js
+backup_tradingview/tradingview-bingx/src/strategy/setups.js
+backup_tradingview/tradingview-bingx/src/strategy/signals.js
