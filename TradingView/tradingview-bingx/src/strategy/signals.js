@@ -1,0 +1,313 @@
+// ─────────────────────────────────────────────────────────────────
+//  Signal Engine (Setup-Based)
+//  Evaluates all 5 named setups for a symbol and generates a signal
+//  for the highest-confidence triggered setup.
+//
+//  Each signal includes:
+//  - setup_id / setup_name  → which setup triggered
+//  - rationale[]            → WHY this trade was entered (shown in dashboard)
+//  - leverage               → setup-specific leverage
+//  - direction / entry / sl / tp1 / tp2 / tp3
+// ─────────────────────────────────────────────────────────────────
+
+import { fileURLToPath } from "url";
+import { analyzeOnChain } from "../analysis/onchain.js";
+import { analyzeOrderBook } from "../analysis/orderbook.js";
+import { analyzeMacro } from "../analysis/macro.js";
+import { evaluateSetups } from "./setups.js";
+import { calculateLevels, calculatePositionSize } from "./fibonacci.js";
+import { calcScaleEntries } from "./risk.js";
+import config from "../config/index.js";
+import { STRATEGY } from "../config/strategy.js";
+
+/**
+ * Generate a trade signal for a symbol.
+ * Evaluates all 5 setups and returns the highest-confidence triggered one.
+ *
+ * @param {string} symbol            — e.g. "BTCUSDT"
+ * @param {object} technicalAnalysis — result from analyzeTechnical()
+ * @param {object} [macroCache]      — reuse macro analysis across symbols
+ * @returns {Signal|null}            — null if no setup triggered above MIN_SCORE
+ */
+export async function generateSignal(symbol, technicalAnalysis, macroCache = null) {
+  const price = technicalAnalysis.price;
+
+  // Fetch supporting data in parallel
+  const [onChain, macro] = await Promise.all([
+    analyzeOnChain(symbol),
+    macroCache ? Promise.resolve(macroCache) : analyzeMacro(),
+  ]);
+
+  // Evaluate all setups (includes STH, liquidation, OI filter internally)
+  const triggeredSetups = await evaluateSetups(symbol, technicalAnalysis, onChain);
+
+  if (!triggeredSetups.length) {
+    return _noSignal(symbol, price, "Nenhum dos 5 setups ativado neste momento");
+  }
+
+  // Pick the highest-confidence setup
+  const best = triggeredSetups[0];
+
+  if (best.confidence < STRATEGY.MIN_SCORE) {
+    return _noSignal(
+      symbol,
+      price,
+      `Setup "${best.setup_name}" com confiança ${best.confidence}% abaixo do mínimo (${STRATEGY.MIN_SCORE}%)`
+    );
+  }
+
+  // Per-symbol SL override (commodities need wider SL — see strategy.js)
+  const slPct = STRATEGY.SYMBOL_SL_PCT?.[symbol] ?? best.sl_pct ?? STRATEGY.SL_PCT;
+
+  // Per-symbol leverage cap (Oil max 5x, Gold max 10x)
+  const maxLev = STRATEGY.SYMBOL_MAX_LEVERAGE?.[symbol] ?? 30;
+  const leverage = Math.min(best.leverage, maxLev);
+
+  // ── Scale-in entry levels ─────────────────────────────────────
+  // Build N limit order prices, calculate avg entry and SL from last level
+  const scale = STRATEGY.SCALE_IN;
+  const scaleResult = calcScaleEntries({
+    entry:      price,
+    direction:  best.direction,
+    slPct,
+    entries:    scale.ENTRIES,
+    spacingPct: scale.SPACING_PCT,
+  });
+
+  // TPs are calculated from the AVERAGE entry price for accurate R:R
+  const levels = calculateLevels(scaleResult.avgEntry, best.direction, slPct, best.tp_r);
+
+  // ── Per-entry sizing: each entry independently risks 1% of capital ──
+  // Size formula: risk_dollars / risk_per_unit
+  //   where risk_dollars  = capital × DAILY_RISK_PCT
+  //         risk_per_unit = abs(entry_i - sl_i)
+  //
+  // This means if ALL entries fill and hit their stops simultaneously,
+  // total loss = N × 1% = 3% (capped by daily limit after first stop).
+  //
+  // Cap: position value per entry ≤ CAPITAL_ALLOCATION_PCT × capital.
+  const riskDollars   = config.capitalUsdt * config.maxRiskPct; // 1% of capital
+  const allocationCap = config.capitalUsdt * (STRATEGY.CAPITAL_ALLOCATION_PCT ?? 0.20);
+
+  const scaleEntries = scaleResult.levels.map((entryPrice, i) => {
+    const sl          = scaleResult.slPrices[i];
+    const riskPerUnit = Math.abs(entryPrice - sl);
+    const rawSize     = riskPerUnit > 0 ? riskDollars / riskPerUnit : 0;
+    const rawValue    = rawSize * entryPrice;
+    // Cap to allocation slot
+    const cappedSize  = rawValue > allocationCap ? allocationCap / entryPrice : rawSize;
+
+    return {
+      index:    i + 1,
+      price:    entryPrice,
+      sl_price: sl,                                              // per-entry stop price
+      size:     parseFloat(cappedSize.toFixed(6)),
+      value:    parseFloat((cappedSize * entryPrice).toFixed(2)),
+    };
+  });
+
+  // Sizing summary (for dashboard display)
+  const totalSize  = scaleEntries.reduce((s, e) => s + e.size, 0);
+  const totalValue = scaleEntries.reduce((s, e) => s + e.value, 0);
+  const sizing = {
+    positionSize:     parseFloat(totalSize.toFixed(6)),
+    positionValue:    parseFloat(totalValue.toFixed(2)),
+    riskDollars:      parseFloat(riskDollars.toFixed(2)),
+    tradeCapital:     parseFloat(allocationCap.toFixed(2)),
+    riskPct:          (config.maxRiskPct * 100).toFixed(2),
+    riskPerEntry:     parseFloat(riskDollars.toFixed(2)),
+    totalMaxRisk:     parseFloat((riskDollars * scale.ENTRIES).toFixed(2)),
+    wasCapped:        scaleEntries.some((e) => e.value >= allocationCap * 0.99),
+  };
+
+  // Append macro + market context to rationale
+  const fullRationale = [...best.rationale];
+  if (macro?.fearGreed?.value !== undefined) {
+    fullRationale.push(
+      `Fear & Greed: ${macro.fearGreed.value}/100 (${macro.fearGreed.classification ?? ""}) — ${_fearGreedContext(macro.fearGreed.value, best.direction)}`
+    );
+  }
+  if (macro?.context?.overallBias) {
+    fullRationale.push(`Macro bias (rules.json): ${macro.context.overallBias}`);
+  }
+  // Add scale-in risk note to rationale
+  fullRationale.push(
+    `Scale-in: ${scale.ENTRIES} entries × $${riskDollars.toFixed(2)} risk each = ` +
+    `$${sizing.totalMaxRisk.toFixed(2)} max total if all stops hit simultaneously`
+  );
+
+  // Determine trade type — on 15min all setups are DAY trades
+  const TF = STRATEGY.TIMEFRAMES;
+  const tradeType = (TF.ENTRY_ANALYSIS === "15" || TF.ENTRY_ANALYSIS === "5")
+    ? "DAY"
+    : best.confidence >= 85 ? "POSITION" : "SWING";
+
+  // ── Signal SL: use first entry's individual SL for BingX stop order ──
+  // (tightest stop — guards against immediate adverse move on entry 1)
+  // Entries 2-N get their own stops placed as they fill (via monitor.js).
+  const firstEntrySl = scaleResult.slPrices[0];
+
+  // Recalculate TPs from first entry (market order price) for accuracy
+  const firstEntryLevels = calculateLevels(
+    scaleResult.levels[0], best.direction, slPct, best.tp_r
+  );
+
+  return {
+    symbol,
+    direction:  best.direction,
+    score:      best.confidence,
+    setup_id:   best.setup_id,
+    setup_name: best.setup_name,
+    leverage,
+    tradeType,
+    rationale:  fullRationale,
+
+    // Price levels
+    // entry    = first scale level price (market order)
+    // sl       = first entry's individual SL (tightest, for BingX stop)
+    // avg_entry = average of all scale levels (for display)
+    // tp1/2/3  = Fibonacci extensions from first entry
+    price,
+    entry:    scaleResult.levels[0],
+    avgEntry: scaleResult.avgEntry,
+    sl:       firstEntrySl,
+    tp1:      firstEntryLevels.tp1.price,
+    tp2:      firstEntryLevels.tp2.price,
+    tp3:      firstEntryLevels.tp3.price,
+    tpDistribution: {
+      tp1Pct: STRATEGY.TP_DISTRIBUTION.TP1,
+      tp2Pct: STRATEGY.TP_DISTRIBUTION.TP2,
+      tp3Pct: STRATEGY.TP_DISTRIBUTION.TP3,
+    },
+
+    // Scale-in entries — each has its own sl_price (per-entry stop)
+    scaleEntries, // [{ index, price, sl_price, size, value }, ...]
+    scaleConfig: {
+      entries:    scale.ENTRIES,
+      spacingPct: scale.SPACING_PCT,
+      lastEntry:  scaleResult.lastEntry,
+      avgEntry:   scaleResult.avgEntry,
+    },
+
+    // Position sizing (aggregated across all entries)
+    sizing,
+
+    // Supporting data (shown in dashboard details)
+    inputs: {
+      technical: {
+        price,
+        ema200d:   technicalAnalysis.daily.ema200,
+        ema21w:    technicalAnalysis.weekly.ema21,
+        macd:      technicalAnalysis.weekly.macd,
+        rsiW:      technicalAnalysis.weekly.rsi,
+        stochRsiW: technicalAnalysis.weekly.stochRsi,
+      },
+      onchain: {
+        funding:      onChain.funding,
+        longShort:    onChain.longShort,
+        openInterest: onChain.openInterest,
+      },
+      macro: {
+        fearGreed:   macro?.fearGreed,
+        overallBias: macro?.context?.overallBias,
+      },
+      allSetups: triggeredSetups.map((s) => ({
+        id:         s.setup_id,
+        direction:  s.direction,
+        confidence: s.confidence,
+      })),
+    },
+
+    createdAt: new Date().toISOString(),
+    status:    "PENDING_APPROVAL",
+  };
+}
+
+// ── Helpers ────────────────────────────────────────────────────
+
+function _noSignal(symbol, price, reason) {
+  return {
+    symbol,
+    direction:  null,
+    score:      0,
+    setup_id:   null,
+    setup_name: null,
+    leverage:   1,
+    tradeType:  null,
+    rationale:  [reason],
+    price,
+    entry: null, sl: null, tp1: null, tp2: null, tp3: null,
+    sizing: null,
+    inputs: {},
+    createdAt: new Date().toISOString(),
+    status: "BELOW_THRESHOLD",
+  };
+}
+
+function _fearGreedContext(value, direction) {
+  if (direction === "LONG") {
+    if (value < 25) return "extremo medo = oportunidade de compra contrariana";
+    if (value < 45) return "medo = favorável para entradas long";
+    if (value < 65) return "neutro/ganância moderada = aceitável";
+    return "ganância extrema = cuidado com overextension";
+  } else {
+    if (value > 75) return "ganância extrema = oportunidade de short contrarian";
+    if (value > 55) return "ganância = favorável para entradas short";
+    return "medo = atenção ao risco de squeeze";
+  }
+}
+
+// ── Self-test ──────────────────────────────────────────────────
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  console.log("Testando signal engine com dados mock...\n");
+
+  const mockTechnical = {
+    symbol: "BTCUSDT",
+    price:  84500,
+    timestamp: new Date().toISOString(),
+    daily: {
+      ema200: 68000,
+      priceAboveEma200: true,
+      barCount: 250,
+      bars: Array.from({ length: 30 }, (_, i) => ({
+        open:  82000 + i * 100,
+        high:  82500 + i * 100,
+        low:   81500 + i * 100,
+        close: 82200 + i * 100,
+        time:  Date.now() - (30 - i) * 86400000,
+      })),
+    },
+    weekly: {
+      ema21: 78000,
+      priceAboveEma21: true,
+      macd: { macdLine: 1500, signalLine: 1200, histogram: 300, crossingUp: true, crossingDown: false },
+      rsi:  62,
+      stochRsi: { k: 72, d: 65, crossingUp: true, crossingDown: false, overbought: false, oversold: false },
+      barCount: 100,
+    },
+    _raw: { dailyCloses: [82200, 83400, 84500], weeklyCloses: [75000, 80000, 84500] },
+  };
+
+  try {
+    const signal = await generateSignal("BTCUSDT", mockTechnical);
+    console.log(`Symbol    : ${signal.symbol}`);
+    console.log(`Setup     : ${signal.setup_name ?? "nenhum"}`);
+    console.log(`Direction : ${signal.direction}`);
+    console.log(`Confidence: ${signal.score}%`);
+    console.log(`Leverage  : ${signal.leverage}x`);
+    console.log(`Status    : ${signal.status}`);
+    if (signal.entry) {
+      console.log(`\nLevels:`);
+      console.log(`  Entry : $${signal.entry.toLocaleString()}`);
+      console.log(`  SL    : $${signal.sl.toLocaleString()}`);
+      console.log(`  TP1   : $${signal.tp1.toLocaleString()}`);
+      console.log(`  TP2   : $${signal.tp2.toLocaleString()}`);
+      console.log(`  TP3   : $${signal.tp3.toLocaleString()}`);
+    }
+    console.log(`\nRationale:`);
+    signal.rationale.forEach((r, i) => console.log(`  ${i + 1}. ${r}`));
+  } catch (err) {
+    console.error("Erro:", err.message);
+    if (process.env.DEBUG) console.error(err);
+  }
+}

@@ -1,0 +1,99 @@
+{
+  "watchlist": [
+    "BTCUSD",
+    "ETHUSD",
+    "SOLUSD"
+  ],
+  "default_timeframe": "240",
+  "bias_criteria": {
+    "bullish": [
+      "Ribbon direction is up (bullish colour)",
+      "Price is above the 20 EMA on the 4H",
+      "RSI is below 60 (room to run)"
+    ],
+    "bearish": [
+      "Ribbon direction is down (bearish colour)",
+      "Price is below the 20 EMA on the 4H",
+      "RSI is above 40 (room to drop)"
+    ],
+    "neutral": [
+      "Ribbon is flat or mixed",
+      "Price is chopping around the 20 EMA",
+      "RSI is between 45 and 55"
+    ]
+  },
+  "risk_rules": [
+    "Only take trades where R:R is at least 1:2",
+    "No trading in the first 15 minutes of the NY session open",
+    "Maximum 2 open positions at once",
+    "If I have 2 losing trades in a row, stop for the day",
+    "In Extreme Fear conditions (Fear & Greed < 20), reduce position size by 50% — bounces are likely squeeze-driven, not fundamental",
+    "Do not hold open limit orders during high-impact macro releases (NFP, CPI, Fed speeches, FOMC) — spread widens significantly in the 5-minute window around the event",
+    "For SOL specifically: require an extra confirmation candle before entering longs — it has been the weakest of the three structurally",
+    "April 15 tax deadline: expect elevated selling pressure and erratic volume — avoid chasing moves on April 15, treat any dip as noise until NY close",
+    "Around the April 22 ceasefire expiry: binary geopolitical risk — tighten stops or stay flat in the 24h window around that date",
+    "FOMC April 28-29: no new positions within 4h of the Fed decision — volatility will spike"
+  ],
+  "notes": "Market in geopolitical-driven recovery as of April 14, 2026. BTC back above $75K, ETH outperforming for first time in months, SOL stabilising. Three near-term risk events (April 15 tax / April 22 ceasefire / April 28-29 FOMC) could each cause 5–10% swings in either direction. Trade the setups, not the narrative — keep position sizes disciplined until BTC confirms above $75K on a daily close. Update this context block after each major event.",
+  "market_context_2026_04_17": {
+    "last_updated": "2026-04-17",
+    "overall_bias": "Cautious recovery — short-term bullish bounce, macro trend still bearish",
+    "fear_greed_index": 11,
+    "fear_greed_label": "Extreme Fear (46+ consecutive days — longest streak ever recorded)",
+    "total_market_cap": "$2.50–2.55 trillion",
+    "btc_dominance_pct": 57.3,
+    "altcoin_season_index": "34/100 — Bitcoin Season territory, altcoin rotation not yet started",
+    "btc": {
+      "price_today": 76691.5,
+      "price_range_recent": "69000–75000",
+      "ath_oct_2025": 126080,
+      "drawdown_from_ath_pct": 41,
+      "key_support": 70000,
+      "key_resistance": "75000–76000",
+      "7day_change_pct": "+7.90",
+      "etf_flows": "BlackRock IBIT logged $269M single-day inflow on Apr 6 — 5-week high. Total BTC ETF inflow that day: $471M.",
+      "sentiment": "56.7% shorts vs 43.3% longs — crowded short book, contrarian bullish signal",
+      "note": "Back above $75K today for the first time in over a month, driven by US-Iran peace talk optimism. Rally faces 3 tests: April 15 tax selling (~$2.8B estimated), April 22 ceasefire expiry, and FOMC April 28-29. Watch $75K as the line in the sand — hold = breakout potential toward $80K, fail = retest $70K."
+    },
+    "eth": {
+      "price_today": 2419.08,
+      "price_range_recent": "2100–2380",
+      "key_support": 2189,
+      "key_resistance": "2300–2380",
+      "outperformance": "ETH up 8.6% on April 14 — outperforming BTC for first time in months",
+      "on_chain": "41% jump in on-chain activity — suggests more than a pure short squeeze",
+      "defi_tvl": "$53–55 billion across 1,700+ protocols (68% of total DeFi ecosystem)",
+      "futures_oi": "$4.8 billion open interest, 64.9% long ratio",
+      "upcoming_catalyst": "Glamsterdam upgrade later in 2026 — designed to make ETH significantly faster and cheaper",
+      "note": "If ETH holds above $2,300 and ETF flows stay positive, next target is $2,600–$2,800. Strongest ETH has looked relative to BTC in months — watch for sustained follow-through."
+    },
+    "sol": {
+      "price_today": 84,
+      "price_range_recent": "81–88",
+      "key_support": 81,
+      "key_resistance": "88–90",
+      "futures_sentiment": "66.1% longs — bullish tilt",
+      "defi": "DeFi volume hit $57B in March — network activity stayed strong through geopolitical stress",
+      "upcoming_catalyst": "Alpenglow consensus upgrade (Votor + Rotor — 100–150ms block finality) — no launch date yet",
+      "note": "SOL stabilised above $81 support after weeks of weakness. DeFi activity is a genuine positive. Still needs to clear $88–90 to flip short-term structure bullish. Treat as highest-risk of the three until that level breaks."
+    },
+    "macro_drivers_to_watch": [
+      "US-Iran peace talks: today's rally is partly driven by renewed optimism — any breakdown sends crypto back toward $69K",
+      "April 15 US tax deadline: estimated $2.8B in crypto selling — expect chop or dip, not a trend day",
+      "April 22 ceasefire expiry: binary event — confirmation extends rally, breakdown = sharp risk-off",
+      "FOMC April 28-29: no rate cut expected — hawkish tone would pressure risk assets",
+      "CLARITY Act: 72% passage probability on Polymarket, Senate markup expected second half of April — positive catalyst for broader crypto regulation",
+      "SEC roundtable April 16: potential near-term regulatory clarity signal",
+      "BTC dominance at 57.3%: altcoin season historically starts when dominance falls below 50% — not there yet",
+      "Spot ETF flows: $471M single-day BTC inflow on Apr 6 signals institutional re-engagement — monitor weekly"
+    ],
+    "key_dates_ahead": [
+      "April 15 — US tax deadline (elevated selling pressure)",
+      "April 16 — SEC crypto roundtable",
+      "April 22 — US-Iran ceasefire expiry (binary geopolitical risk)",
+      "April 28-29 — FOMC meeting (Fed rate decision)",
+      "Late April — CLARITY Act Senate markup"
+    ],
+    "contrarian_signal": "Fear & Greed below 10 for 46+ consecutive days — longest extreme fear streak in crypto history. Historical median 90-day return after similar streaks: +48.5%. Smart money is accumulating. This doesn't mean buy blindly, but it means the risk/reward on quality setups is skewed long on a multi-week horizon."
+  }
+}
