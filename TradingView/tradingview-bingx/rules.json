@@ -35,8 +35,8 @@
     "FOMC April 28-29: no new positions within 4h of the Fed decision — volatility will spike"
   ],
   "notes": "Market in geopolitical-driven recovery as of April 14, 2026. BTC back above $75K, ETH outperforming for first time in months, SOL stabilising. Three near-term risk events (April 15 tax / April 22 ceasefire / April 28-29 FOMC) could each cause 5–10% swings in either direction. Trade the setups, not the narrative — keep position sizes disciplined until BTC confirms above $75K on a daily close. Update this context block after each major event.",
-  "market_context_2026_04_19": {
-    "last_updated": "2026-04-19",
+  "market_context_2026_04_20": {
+    "last_updated": "2026-04-20",
     "overall_bias": "Cautious recovery — short-term bullish bounce, macro trend still bearish",
     "fear_greed_index": 11,
     "fear_greed_label": "Extreme Fear (46+ consecutive days — longest streak ever recorded)",
@@ -44,7 +44,7 @@
     "btc_dominance_pct": 57.3,
     "altcoin_season_index": "34/100 — Bitcoin Season territory, altcoin rotation not yet started",
     "btc": {
-      "price_today": 75905.6,
+      "price_today": 76129.6,
       "price_range_recent": "69000–75000",
       "ath_oct_2025": 126080,
       "drawdown_from_ath_pct": 41,
@@ -56,7 +56,7 @@
       "note": "Back above $75K today for the first time in over a month, driven by US-Iran peace talk optimism. Rally faces 3 tests: April 15 tax selling (~$2.8B estimated), April 22 ceasefire expiry, and FOMC April 28-29. Watch $75K as the line in the sand — hold = breakout potential toward $80K, fail = retest $70K."
     },
     "eth": {
-      "price_today": 2338,
+      "price_today": 2325.87,
       "price_range_recent": "2100–2380",
       "key_support": 2189,
       "key_resistance": "2300–2380",

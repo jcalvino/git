@@ -1,0 +1,55 @@
+export enum Source {
+  IDEALISTA = "IDEALISTA",
+  IMOVIRTUAL = "IMOVIRTUAL",
+  CASA_SAPO = "CASA_SAPO",
+  CASAYES = "CASAYES",
+  QUATRU = "QUATRU",
+  MANUAL_PROSPECTUS = "MANUAL_PROSPECTUS",
+}
+
+export enum Use {
+  HPP = "HPP",
+  INVESTMENT = "INVESTMENT",
+}
+
+export enum FetchMode {
+  ON_DEMAND = "ON_DEMAND",
+  API = "API",
+  AGGREGATOR = "AGGREGATOR",
+}
+
+export enum PropertyType {
+  RESIDENTIAL_APARTMENT = "RESIDENTIAL_APARTMENT",
+  RESIDENTIAL_HOUSE = "RESIDENTIAL_HOUSE",
+  HOTEL_UNIT = "HOTEL_UNIT",
+  TOURIST_APARTMENT = "TOURIST_APARTMENT",
+}
+
+export enum RevenueModel {
+  LONG_TERM_RENTAL = "LONG_TERM_RENTAL",
+  GUARANTEED_THEN_SHARE = "GUARANTEED_THEN_SHARE",
+  SHORT_TERM_AL = "SHORT_TERM_AL",
+  MIXED = "MIXED",
+}
+
+export enum EnergyCert {
+  APLUS = "APLUS",
+  A = "A",
+  B = "B",
+  BMINUS = "BMINUS",
+  C = "C",
+  D = "D",
+  E = "E",
+  F = "F",
+  G = "G",
+  UNKNOWN = "UNKNOWN",
+}
+
+export enum CondLevel {
+  L1_COSMETIC = "L1_COSMETIC",
+  L2_STANDARD = "L2_STANDARD",
+  L3_STRUCTURAL = "L3_STRUCTURAL",
+  UNKNOWN = "UNKNOWN",
+}
+
+export type Recommendation = "FLIP" | "RENT" | "AVOID";

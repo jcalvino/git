@@ -3,7 +3,13 @@ import React from "react";
 export function StatsPanel({ stats, overview }) {
   const balance = overview?.balance ?? {};
   const capital = balance.total ?? 200;
-  const totalPnl = stats?.totalPnl ?? 0;
+
+  // Use total P&L (realized + unrealized) for accurate display
+  const realizedPnl = stats?.totalPnl ?? 0;
+  const unrealizedPnl = stats?.unrealizedPnl ?? 0;
+  const totalPnl = stats?.totalPnlWithUnrealized ?? realizedPnl;
+
+  // Calculate percentage: (Total P&L) / (Capital - Total P&L) * 100
   const pnlPct = capital > 0 ? (totalPnl / (capital - totalPnl)) * 100 : 0;
 
   return (
@@ -13,6 +19,7 @@ export function StatsPanel({ stats, overview }) {
         value={`$${capital.toFixed(2)}`}
         sub={`${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)} (${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%)`}
         subColor={totalPnl >= 0 ? "text-positive" : "text-negative"}
+        detail={unrealizedPnl !== 0 ? `Realizados: ${realizedPnl >= 0 ? "+" : ""}$${realizedPnl.toFixed(2)} | Abertos: ${unrealizedPnl >= 0 ? "+" : ""}$${unrealizedPnl.toFixed(2)}` : undefined}
       />
       <StatCard
         label="Win Rate"
@@ -36,7 +43,7 @@ export function StatsPanel({ stats, overview }) {
   );
 }
 
-function StatCard({ label, value, sub, subColor, highlight = false, danger = false }) {
+function StatCard({ label, value, sub, subColor, detail, highlight = false, danger = false }) {
   const valueColor = danger
     ? "text-negative"
     : highlight
@@ -49,6 +56,9 @@ function StatCard({ label, value, sub, subColor, highlight = false, danger = fal
       <div className={`text-xl font-bold font-mono ${valueColor}`}>{value}</div>
       {sub && (
         <div className={`text-xs mt-1 ${subColor ?? "text-muted"}`}>{sub}</div>
+      )}
+      {detail && (
+        <div className="text-xs mt-2 pt-2 border-t border-border text-muted">{detail}</div>
       )}
     </div>
   );

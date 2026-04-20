@@ -484,8 +484,22 @@ export function getStats() {
     .prepare(`SELECT pnl, pnl_pct FROM trades WHERE status = 'CLOSED' AND pnl IS NOT NULL`)
     .all();
 
+  // Get unrealized P&L from open positions
+  const positions = db
+    .prepare(`SELECT unrealized_pnl FROM positions`)
+    .all();
+  const unrealizedPnl = positions.reduce((s, p) => s + (p.unrealized_pnl || 0), 0);
+
   if (closed.length === 0) {
-    return { totalTrades: 0, winRate: 0, avgPnl: 0, totalPnl: 0, maxDrawdown: 0 };
+    return {
+      totalTrades: 0,
+      winRate: 0,
+      avgPnl: 0,
+      totalPnl: 0,
+      unrealizedPnl: parseFloat(unrealizedPnl.toFixed(2)),
+      totalPnlWithUnrealized: parseFloat(unrealizedPnl.toFixed(2)),
+      maxDrawdown: 0,
+    };
   }
 
   const wins = closed.filter((t) => t.pnl > 0);
@@ -506,6 +520,8 @@ export function getStats() {
     if (dd > maxDD) maxDD = dd;
   }
 
+  const totalPnlWithUnrealized = totalPnl + unrealizedPnl;
+
   return {
     totalTrades: closed.length,
     winCount: wins.length,
@@ -513,6 +529,8 @@ export function getStats() {
     winRate: parseFloat(((wins.length / closed.length) * 100).toFixed(1)),
     avgPnl: parseFloat(avgPnl.toFixed(2)),
     totalPnl: parseFloat(totalPnl.toFixed(2)),
+    unrealizedPnl: parseFloat(unrealizedPnl.toFixed(2)),
+    totalPnlWithUnrealized: parseFloat(totalPnlWithUnrealized.toFixed(2)),
     avgWin: parseFloat(avgWin.toFixed(2)),
     avgLoss: parseFloat(avgLoss.toFixed(2)),
     expectancy: parseFloat(expectancy.toFixed(2)),
