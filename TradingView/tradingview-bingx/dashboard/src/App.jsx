@@ -7,18 +7,31 @@ import { OpenPositions } from "./components/OpenPositions.jsx";
 import { PnlBreakdownChart } from "./components/PnlBreakdownChart.jsx";
 import { TradeHistory } from "./components/TradeHistory.jsx";
 import { OnChainPanel } from "./components/OnChainPanel.jsx";
-import { GoalTracker } from "./components/GoalTracker.jsx";
 import { CoinMBalance } from "./components/CoinMBalance.jsx";
 import { ErrorBanner } from "./components/ErrorBanner.jsx";
 import { MonitorsPanel } from "./components/MonitorsPanel.jsx";
 import { RulesPanel } from "./components/RulesPanel.jsx";
 import { ApiHealthPanel } from "./components/ApiHealthPanel.jsx";
 import { ScanResultsGrid } from "./components/ScanResultsGrid.jsx";
+import { GoalProgress } from "./components/GoalProgress.jsx";
+import { MonthlyPnlBars } from "./components/MonthlyPnlBars.jsx";
+import { DrawdownChart } from "./components/DrawdownChart.jsx";
+import { CloseReasonDonut } from "./components/CloseReasonDonut.jsx";
+import { SetupPerformance } from "./components/SetupPerformance.jsx";
+import { SymbolPerformance } from "./components/SymbolPerformance.jsx";
+import { RiskDashboard } from "./components/RiskDashboard.jsx";
 
-const TABS = ["Overview", "Trades", "On-Chain", "Monitoring", "Regras"];
+const TABS = [
+  { id: "Painel",        label: "Painel" },
+  { id: "Trades",        label: "Trades" },
+  { id: "Analytics",     label: "Analytics" },
+  { id: "On-Chain",      label: "On-Chain" },
+  { id: "Monitoramento", label: "Monitoramento" },
+  { id: "Regras",        label: "Regras" },
+];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState("Overview");
+  const [activeTab, setActiveTab] = useState("Painel");
   const {
     overview,
     trades,
@@ -33,6 +46,12 @@ export default function App() {
     marketMetrics,
     strategy,
     knowledgeBase,
+    goalProgress,
+    dailySeries,
+    bySetup,
+    bySymbol,
+    drawdownSeries,
+    closeReasons,
     refresh,
     closeTrade,
     dismissErrors,
@@ -59,12 +78,12 @@ export default function App() {
   const [clearingHistory, setClearingHistory] = useState(false);
 
   const handleClearHistory = async () => {
-    if (!window.confirm("Apagar todo o histórico de trades fechados? Esta ação não pode ser desfeita.")) return;
+    if (!window.confirm("Apagar todo o historico de trades fechados? Esta acao nao pode ser desfeita.")) return;
     setClearingHistory(true);
     try {
       await clearHistory();
     } catch (err) {
-      alert(`Erro ao apagar histórico: ${err.message}\n\nVerifique se o servidor está rodando.`);
+      alert(`Erro ao apagar historico: ${err.message}`);
     } finally {
       setClearingHistory(false);
     }
@@ -73,8 +92,9 @@ export default function App() {
   if (loading) {
     return (
       <div className="min-h-screen bg-bg flex items-center justify-center">
-        <div className="text-accent text-sm animate-pulse">
-          Connecting to server...
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-3 h-3 rounded-full bg-accent animate-pulse shadow-glow" />
+          <div className="text-accent text-xs tracking-[0.2em]">CONECTANDO AO SERVIDOR</div>
         </div>
       </div>
     );
@@ -83,16 +103,15 @@ export default function App() {
   if (error) {
     return (
       <div className="min-h-screen bg-bg flex flex-col items-center justify-center gap-4">
-        <div className="text-negative text-sm">Error: {error}</div>
+        <div className="text-negative text-sm">Erro: {error}</div>
         <div className="text-muted text-xs">
-          Make sure <code className="text-accent">node src/api/server.js</code>{" "}
-          is running on port 3001
+          Verifique se <code className="text-accent">node src/api/server.js</code> esta rodando na porta 3001
         </div>
         <button
           onClick={refresh}
-          className="px-4 py-2 border border-accent text-accent rounded text-xs hover:bg-accent/10"
+          className="px-4 py-2 border border-accent text-accent rounded text-xs hover:bg-accent/10 transition-colors"
         >
-          Retry
+          Tentar novamente
         </button>
       </div>
     );
@@ -103,56 +122,61 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-bg text-text">
-      <Header overview={overview} lastUpdate={lastUpdate} onRefresh={refresh} mode={mode} />
+      <Header
+        overview={overview}
+        lastUpdate={lastUpdate}
+        onRefresh={refresh}
+        mode={mode}
+        goalProgress={goalProgress}
+        dailyRisk={dailyRisk}
+        openTradesCount={openTrades.length}
+      />
 
-      {/* Error Banner */}
       <ErrorBanner errorsData={errorsData} onDismiss={dismissErrors} />
 
-      {/* Daily risk limit notice */}
       {dailyRisk?.limited && (
-        <div className="mx-6 mt-3 px-4 py-2.5 rounded-lg border border-yellow-500/30 bg-yellow-500/10 text-xs text-yellow-400 flex items-center gap-2">
-          <span className="font-bold">DAILY LOSS LIMIT</span>
-          <span className="text-yellow-400/70">·</span>
+        <div className="mx-6 mt-3 px-4 py-2.5 rounded-lg border border-negative/40 bg-negative/10 text-xs text-negative flex items-center gap-2">
+          <span className="font-bold tracking-wider">CIRCUIT BREAKER ATIVO</span>
+          <span className="text-negative/70">.</span>
           <span>
-            Loss today:{" "}
+            Perda hoje:{" "}
             <span className="font-mono font-bold">${dailyRisk.dailyPnl.toFixed(2)}</span>
-            {" "}(limit: <span className="font-mono">-${dailyRisk.limitAmount.toFixed(2)}</span>)
+            {" "}(limite: <span className="font-mono">-${dailyRisk.limitAmount.toFixed(2)}</span>)
           </span>
-          <span className="text-yellow-400/70">·</span>
-          <span>No new trades until tomorrow.</span>
+          <span className="text-negative/70">.</span>
+          <span>Novos trades bloqueados ate amanha.</span>
         </div>
       )}
-      {/* Daily profit reference — shown when goal is reached, bot keeps running */}
+
       {!dailyRisk?.limited && (dailyRisk?.profitReference > 0) && (dailyRisk?.dailyProfit >= dailyRisk?.profitReference) && (
         <div className="mx-6 mt-3 px-4 py-2.5 rounded-lg border border-positive/30 bg-positive/10 text-xs text-positive flex items-center gap-2">
-          <span className="font-bold">META DIARIA ATINGIDA</span>
-          <span className="text-positive/70">·</span>
+          <span className="font-bold tracking-wider">PACE DIARIO ATINGIDO</span>
+          <span className="text-positive/70">.</span>
           <span>
             Lucro hoje:{" "}
             <span className="font-mono font-bold">+${dailyRisk.dailyProfit?.toFixed(2)}</span>
-            {" "}/ meta{" "}
+            {" "}/ pace{" "}
             <span className="font-mono">${dailyRisk.profitReference?.toFixed(2)}</span>
           </span>
-          <span className="text-positive/70">·</span>
+          <span className="text-positive/70">.</span>
           <span>Bot continua operando para maximizar lucro.</span>
         </div>
       )}
 
-      {/* Tab Navigation */}
-      <nav className="flex gap-1 px-6 pt-4 border-b border-border">
+      <nav className="flex gap-1 px-6 pt-4 border-b border-border overflow-x-auto">
         {TABS.map((tab) => (
           <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`px-4 py-2 text-xs font-medium transition-colors border-b-2 -mb-px ${
-              activeTab === tab
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`px-4 py-2 text-xs font-medium tracking-wider transition-colors border-b-2 -mb-px whitespace-nowrap ${
+              activeTab === tab.id
                 ? "border-accent text-accent"
                 : "border-transparent text-muted hover:text-text"
             }`}
           >
-            {tab}
-            {tab === "Overview" && openTrades.length > 0 && (
-              <span className="ml-1.5 px-1.5 py-0.5 bg-positive/20 text-positive rounded-full text-xs">
+            {tab.label.toUpperCase()}
+            {tab.id === "Painel" && openTrades.length > 0 && (
+              <span className="ml-2 px-1.5 py-0.5 bg-accent/20 text-accent rounded-full text-[10px] font-mono">
                 {openTrades.length}
               </span>
             )}
@@ -160,47 +184,59 @@ export default function App() {
         ))}
       </nav>
 
-      {/* Content */}
-      <main className="px-6 py-4 max-w-screen-2xl mx-auto">
+      <main className="px-6 py-5 max-w-screen-2xl mx-auto animate-fade-in">
 
-        {/* ── Overview ── */}
-        {activeTab === "Overview" && (
-          <div className="space-y-4">
-            {/* Stats row */}
+        {activeTab === "Painel" && (
+          <div className="space-y-5">
+            <RiskDashboard
+              dailyRisk={dailyRisk}
+              goalProgress={goalProgress}
+              overview={overview}
+              openTrades={openTrades}
+            />
+
             <StatsPanel stats={stats} overview={overview} />
 
-            {/* Goal + Equity Curve side by side */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <GoalTracker currentCapital={overview?.balance?.total} />
-              <div className="bg-card border border-border rounded-lg p-4">
-                <h2 className="text-xs text-muted mb-3 tracking-wider">EQUITY CURVE</h2>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+              <GoalProgress goalProgress={goalProgress} dailyRisk={dailyRisk} />
+              <MonthlyPnlBars dailySeries={dailySeries} goalProgress={goalProgress} />
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+              <div className="lg:col-span-2 bg-card border border-border rounded-xl p-5 shadow-card">
+                <h2 className="text-xs text-muted tracking-[0.15em] font-medium mb-4">EQUITY CURVE</h2>
                 <EquityCurve snapshots={overview?.equityCurve ?? []} />
+              </div>
+              <div className="bg-card border border-border rounded-xl p-5 shadow-card">
+                <h2 className="text-xs text-muted tracking-[0.15em] font-medium mb-4">
+                  POSICOES ABERTAS {openTrades.length > 0 && <span className="text-accent font-mono">({openTrades.length})</span>}
+                </h2>
+                {openTrades.length === 0 ? (
+                  <p className="text-xs text-muted-dim">Nenhuma posicao aberta no momento.</p>
+                ) : (
+                  <OpenPositions trades={openTrades} onClose={closeTrade} />
+                )}
               </div>
             </div>
 
-            {/* CoinM balance — full width */}
             <CoinMBalance coinMBalance={overview?.coinMBalance} />
-
-            {/* P&L Breakdown Chart */}
-            <PnlBreakdownChart trades={trades} />
           </div>
         )}
 
-        {/* ── Trades ── */}
         {activeTab === "Trades" && (
-          <div className="space-y-4">
+          <div className="space-y-5">
             {openTrades.length > 0 && (
-              <div className="bg-card border border-border rounded-lg p-4">
-                <h2 className="text-xs text-muted mb-3 tracking-wider">
-                  OPEN POSITIONS ({openTrades.length})
+              <div className="bg-card border border-border rounded-xl p-5 shadow-card">
+                <h2 className="text-xs text-muted tracking-[0.15em] font-medium mb-4">
+                  POSICOES ABERTAS <span className="text-accent font-mono">({openTrades.length})</span>
                 </h2>
                 <OpenPositions trades={openTrades} onClose={closeTrade} horizontal />
               </div>
             )}
-            <div className="bg-card border border-border rounded-lg p-4">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-xs text-muted tracking-wider">
-                  TRADE HISTORY ({closedTrades.length})
+            <div className="bg-card border border-border rounded-xl p-5 shadow-card">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xs text-muted tracking-[0.15em] font-medium">
+                  HISTORICO DE TRADES <span className="text-muted-dim font-mono">({closedTrades.length})</span>
                 </h2>
                 {closedTrades.length > 0 && (
                   <button
@@ -208,31 +244,43 @@ export default function App() {
                     disabled={clearingHistory}
                     className="px-3 py-1 text-xs border border-negative/40 text-negative/70 rounded hover:border-negative hover:text-negative transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {clearingHistory ? "Apagando..." : "Clear history"}
+                    {clearingHistory ? "Apagando..." : "Limpar historico"}
                   </button>
                 )}
               </div>
               <TradeHistory trades={trades} />
             </div>
+            <PnlBreakdownChart trades={trades} />
           </div>
         )}
 
-        {/* ── Monitoring ── */}
-        {activeTab === "Monitoring" && (
-          <div className="space-y-4">
-            {/* API Health */}
-            <ApiHealthPanel />
+        {activeTab === "Analytics" && (
+          <div className="space-y-5">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+              <DrawdownChart series={drawdownSeries} />
+              <CloseReasonDonut closeReasons={closeReasons} />
+            </div>
+            <SetupPerformance bySetup={bySetup} />
+            <SymbolPerformance bySymbol={bySymbol} />
+            <PnlBreakdownChart trades={trades} />
+          </div>
+        )}
 
-            {/* Scan Results Grid */}
+        {activeTab === "On-Chain" && (
+          <OnChainPanel overview={overview} marketMetrics={marketMetrics} />
+        )}
+
+        {activeTab === "Monitoramento" && (
+          <div className="space-y-5">
+            <ApiHealthPanel />
             <ScanResultsGrid />
 
-            {/* SL/TP Repair */}
-            <div className="bg-card border border-border rounded-lg p-4">
+            <div className="bg-card border border-border rounded-xl p-5 shadow-card">
               <div className="flex items-center justify-between mb-3">
                 <div>
-                  <h2 className="text-xs text-muted tracking-wider">AUDITORIA SL/TP</h2>
-                  <p className="text-xs text-muted/70 mt-0.5">
-                    Verifica posições abertas na BingX e aplica SL/TP ausentes.
+                  <h2 className="text-xs text-muted tracking-[0.15em] font-medium">AUDITORIA SL/TP</h2>
+                  <p className="text-[10px] text-muted-dim mt-0.5">
+                    Verifica posicoes abertas na BingX e aplica SL/TP ausentes.
                   </p>
                 </div>
                 <button
@@ -271,27 +319,19 @@ export default function App() {
               )}
             </div>
 
-            {/* Price Monitors */}
-            <div className="bg-card border border-border rounded-lg p-4">
-              <h2 className="text-xs text-muted mb-3 tracking-wider">PRICE MONITORS</h2>
+            <div className="bg-card border border-border rounded-xl p-5 shadow-card">
+              <h2 className="text-xs text-muted tracking-[0.15em] font-medium mb-3">MONITORES DE PRECO</h2>
               {monitors.length > 0 ? (
                 <MonitorsPanel monitors={monitors} />
               ) : (
-                <p className="text-xs text-muted">
-                  Nenhum monitor configurado em{" "}
-                  <code className="text-accent">monitors.json</code>.
+                <p className="text-xs text-muted-dim">
+                  Nenhum monitor configurado em <code className="text-accent">monitors.json</code>.
                 </p>
               )}
             </div>
           </div>
         )}
 
-        {/* ── On-Chain ── */}
-        {activeTab === "On-Chain" && (
-          <OnChainPanel overview={overview} marketMetrics={marketMetrics} />
-        )}
-
-        {/* ── Regras ── */}
         {activeTab === "Regras" && (
           <RulesPanel strategy={strategy} knowledgeBase={knowledgeBase} />
         )}

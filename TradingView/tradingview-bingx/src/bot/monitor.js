@@ -14,8 +14,10 @@ import {
   recordPartialClose,
   closeTrade,
   upsertBingXPosition,
+  updateTradeStopLoss,
 } from "../storage/trades.js";
-import { placeOrder } from "../exchanges/bingx.js";
+import { placeOrder, getOpenOrders, cancelOrder } from "../exchanges/bingx.js";
+import { shouldMoveStopLoss } from "../strategy/risk.js";
 import config, { refreshCapital } from "../config/index.js";
 import { STRATEGY } from "../config/strategy.js";
 
@@ -85,6 +87,17 @@ async function checkTrade(trade, currentPrice) {
       await executeTpOrSl(trade, "TP1", currentPrice, closeSize);
       recordPartialClose(trade.id, "TP1", currentPrice, closeSize);
       actions.push({ type: "TP1", trade: trade.id, price: currentPrice, pnl: unrealizedPnl * STRATEGY.TP_DISTRIBUTION.TP1 });
+
+      // ── BREAK-EVEN APÓS TP1 (Trade-Runner Mode) ─────────────────
+      // Move SL para entry + buffer, protegendo o trade restante.
+      // Se tudo der errado daqui pra frente, o pior cenário é
+      // fechar em ~break-even (capital intocado).
+      try {
+        await moveToBreakEvenOrTrail(trade);
+        actions.push({ type: "BREAK_EVEN", trade: trade.id });
+      } catch (err) {
+        console.error(`  [BE] Failed to move SL for trade #${trade.id}: ${err.message}`);
+      }
     }
   }
 
@@ -104,6 +117,18 @@ async function checkTrade(trade, currentPrice) {
       await executeTpOrSl(trade, "TP2", currentPrice, closeSize);
       recordPartialClose(trade.id, "TP2", currentPrice, closeSize);
       actions.push({ type: "TP2", trade: trade.id, price: currentPrice });
+
+      // ── TRAIL STOP APÓS TP2 ─────────────────────────────────────
+      // Move SL para 50% do caminho entry→TP2.
+      // Trava ~50% do ganho parcial mesmo se o trade reverter antes do TP3.
+      if (STRATEGY.BREAK_EVEN?.TRAIL_AFTER_TP2) {
+        try {
+          await moveToBreakEvenOrTrail(trade);
+          actions.push({ type: "TRAIL_STOP", trade: trade.id });
+        } catch (err) {
+          console.error(`  [TRAIL] Failed to move SL for trade #${trade.id}: ${err.message}`);
+        }
+      }
     }
   }
 
@@ -137,6 +162,87 @@ function _toBingXSymbol(symbol) {
     return symbol.slice(0, -4) + "-USDT";
   }
   return symbol; // fallback (e.g. BTC-USD for Coin-M)
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  BREAK-EVEN / TRAIL STOP (post-TP1 / post-TP2)
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Move SL de um trade para break-even (após TP1) ou trail stop (após TP2).
+ *
+ * - Paper: atualiza apenas o DB (sl_price do trade + position).
+ * - Live:  cancela SL order antiga na BingX e coloca nova.
+ *
+ * A decisão de qual tipo (BE ou TRAIL) é feita dentro de shouldMoveStopLoss,
+ * baseado em position.tp1_hit e position.tp2_hit.
+ *
+ * @param {object} trade — row de trades (já com tp1_hit/tp2_hit atualizados)
+ */
+async function moveToBreakEvenOrTrail(trade) {
+  // Re-ler position para ter tp1_hit/tp2_hit atualizados
+  const position = getOpenPositions().find((p) => p.trade_id === trade.id);
+  if (!position) return;
+
+  const decision = shouldMoveStopLoss(trade, position);
+  if (!decision) return; // não precisa mover
+
+  const { newSl, reason, type } = decision;
+
+  // Sanity check: não mover para pior (já validado em shouldMoveStopLoss, mas defensivo)
+  const currentSl = trade.sl_price;
+  const worse = trade.direction === "LONG" ? newSl < currentSl : newSl > currentSl;
+  if (worse) {
+    console.log(`  [${type}] SL atual ($${currentSl}) melhor que proposto ($${newSl}) — skip`);
+    return;
+  }
+
+  // ── Paper trade: só atualiza DB ─────────────────────────────────
+  if (config.paperTrade) {
+    updateTradeStopLoss(trade.id, newSl, type);
+    console.log(`  [PAPER][${type}] Trade #${trade.id} ${trade.symbol} ${trade.direction}: SL $${currentSl.toFixed(2)} → $${newSl.toFixed(2)} (${reason})`);
+    return;
+  }
+
+  // ── Live trade: cancela SL antiga na BingX + coloca nova ────────
+  const bingxSymbol = _toBingXSymbol(trade.symbol);
+  const closeSide   = trade.direction === "LONG" ? "SELL" : "BUY";
+
+  try {
+    // 1. Listar open orders para achar a SL antiga
+    const openOrders = await getOpenOrders(bingxSymbol);
+    const oldSlOrder = openOrders?.find((o) =>
+      (o.type === "STOP_MARKET" || o.type === "STOP") &&
+      (o.positionSide === trade.direction || o.positionSide === "BOTH" || !o.positionSide)
+    );
+
+    if (oldSlOrder) {
+      try {
+        await cancelOrder(bingxSymbol, oldSlOrder.orderId);
+      } catch (cancelErr) {
+        console.warn(`  [${type}] Could not cancel old SL order: ${cancelErr.message}`);
+      }
+    }
+
+    // 2. Colocar nova SL order no break-even price
+    await placeOrder({
+      symbol:       bingxSymbol,
+      side:         closeSide,
+      positionSide: trade.direction,
+      type:         "STOP_MARKET",
+      stopPrice:    newSl,
+      quantity:     trade.size, // size restante (TP1 já fechou parte)
+    });
+
+    // 3. Atualizar DB
+    updateTradeStopLoss(trade.id, newSl, type);
+    console.log(`  [${type}] Trade #${trade.id} ${trade.symbol} ${trade.direction}: SL $${currentSl.toFixed(2)} → $${newSl.toFixed(2)}`);
+  } catch (err) {
+    console.error(`  [${type}] Live SL update failed: ${err.message}`);
+    // Ainda atualiza DB para refletir intenção
+    updateTradeStopLoss(trade.id, newSl, type + "_DB_ONLY");
+    throw err;
+  }
 }
 
 async function executeTpOrSl(trade, type, price, size) {
@@ -182,98 +288,91 @@ async function executeTpOrSl(trade, type, price, size) {
 
 // ── Main Monitor Loop ──────────────────────────────────────────
 
-async function monitorOnce() {
-  // ── Sync live positions from BingX → local DB ─────────────────
-  // This ensures external positions (opened manually or on another device)
-  // are always visible in the dashboard without waiting for a scan.
+/**
+ * Executa uma passada completa: sincroniza posicoes com BingX e checa SL/TP
+ * em cada trade aberto. Exportada para ser chamada pela API.
+ */
+export async function monitorOnce() {
+  const actions = [];
+
+  // ── 1. Sync live positions from BingX → local DB ─────────────
   try {
-    // COINM_ENABLED only gates new order placement — always read positions.
-    const [usdtPositions, coinmPositions] = await Promise.allSettled([
+    const [usdtRes, coinmRes] = await Promise.allSettled([
       getPositions(),
       getCoinMPositions(),
     ]);
-
-    const allLive = [
-      ...(usdtPositions.status === "fulfilled" ? usdtPositions.value : []),
-      ...(coinmPositions.status === "fulfilled" ? coinmPositions.value : []),
+    const livePositions = [
+      ...(usdtRes.status  === "fulfilled" ? (usdtRes.value  ?? []) : []),
+      ...(coinmRes.status === "fulfilled" ? (coinmRes.value ?? []) : []),
     ];
-
-    for (const pos of allLive) {
-      upsertBingXPosition(pos);
+    for (const pos of livePositions) {
+      try { upsertBingXPosition(pos); } catch (_) { /* continue */ }
     }
-  } catch {
-    // No API keys or paper mode — skip sync silently
+  } catch (err) {
+    console.warn(`[MONITOR] Sync BingX falhou: ${err.message}`);
   }
 
-  // ── Refresh capital so position sizing stays current ───────────
-  await refreshCapital();
-
+  // ── 2. Checar cada trade aberto ──────────────────────────────
   const openTrades = getOpenTrades();
-  if (openTrades.length === 0) return [];
-
-  const symbols = [...new Set(openTrades.map((t) => t.symbol))];
-  const prices = {};
-
-  await Promise.all(
-    symbols.map(async (s) => {
-      try {
-        prices[s] = await getPrice(_toBingXSymbol(s));
-      } catch {
-        prices[s] = null;
-      }
-    })
-  );
-
-  const allActions = [];
   for (const trade of openTrades) {
-    const price = prices[trade.symbol];
-    if (!price) continue;
-    const actions = await checkTrade(trade, price);
-    allActions.push(...actions);
+    try {
+      const bingxSymbol = _toBingXSymbol(trade.symbol);
+      const priceData   = await getPrice(bingxSymbol).catch(() => null);
+      const currentPrice = priceData?.price ?? priceData ?? null;
+      if (!currentPrice) continue;
+
+      // Atualiza position row com mark_price + unrealized_pnl
+      const direction = trade.direction;
+      const sizeFloat = Number(trade.size) || 0;
+      const unrealized = direction === "LONG"
+        ? (currentPrice - trade.entry_price) * sizeFloat
+        : (trade.entry_price - currentPrice) * sizeFloat;
+      try { updatePosition(trade.id, currentPrice, unrealized); } catch (_) {}
+
+      // Dispara SL/TP se atingidos
+      const triggered = await checkTrade(trade, currentPrice);
+      if (triggered && triggered.length > 0) actions.push(...triggered);
+
+      // Apos TP1 / TP2 tenta mover SL para BE / Trail
+      try { await moveToBreakEvenOrTrail(trade); } catch (_) {}
+    } catch (err) {
+      console.error(`[MONITOR] Erro no trade #${trade.id}: ${err.message}`);
+    }
   }
 
-  return allActions;
+  return actions;
 }
 
-async function startMonitor() {
-  console.log(
-    `Position monitor started (polling every ${POLL_INTERVAL_MS / 1000}s)`
-  );
+// ── Boot: quando executado diretamente como processo ─────────────
+const __filename = fileURLToPath(import.meta.url);
+const isMain = process.argv[1] === __filename;
 
-  const loop = async () => {
-    try {
-      const actions = await monitorOnce();
-      if (actions.length > 0) {
-        console.log(
-          `[MONITOR] ${actions.length} action(s) taken: ${actions.map((a) => a.type).join(", ")}`
-        );
-      }
-    } catch (err) {
-      console.error(`[MONITOR] Error: ${err.message}`);
-    }
-    setTimeout(loop, POLL_INTERVAL_MS);
-  };
-
-  await loop();
-}
-
-const isMain = process.argv[1] === fileURLToPath(import.meta.url);
 if (isMain) {
-  const statusOnly = process.argv.includes("--status");
-  if (statusOnly) {
+  console.log(`[MONITOR] Iniciando (poll a cada ${POLL_INTERVAL_MS / 1000}s)...`);
+
+  // CLI --status apenas imprime estado e sai
+  if (process.argv.includes("--status")) {
     const trades = getOpenTrades();
-    if (trades.length === 0) {
-      console.log("No open trades.");
-    } else {
-      for (const t of trades) {
-        console.log(
-          `Trade #${t.id}: ${t.direction} ${t.symbol} | Entry: $${t.entry_price} | SL: $${t.sl_price} | TP1: $${t.tp1_price}`
-        );
-      }
+    console.log(`Open trades: ${trades.length}`);
+    for (const t of trades) {
+      console.log(`  #${t.id} ${t.direction} ${t.symbol} @ $${t.entry_price} size=${t.size}`);
     }
     process.exit(0);
   }
-  await startMonitor();
-}
 
-export { monitorOnce, startMonitor };
+  const loop = async () => {
+    try {
+      // Refresh capital (em caso de depositos / saques)
+      try { await refreshCapital(); } catch (_) {}
+      const actions = await monitorOnce();
+      if (actions && actions.length > 0) {
+        console.log(`[MONITOR] ${actions.length} acao(oes) executada(s)`);
+      }
+    } catch (err) {
+      console.error(`[MONITOR] Falha na iteracao: ${err.message}`);
+    }
+  };
+
+  loop();
+  setInterval(loop, POLL_INTERVAL_MS);
+}

@@ -4,7 +4,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { placeOrder, placeLimitOrder, setLeverage, getPositions, getBalance, placeSlTpOrders } from "../exchanges/bingx.js";
-import { getSignal, openTrade, updateSignalStatus, isDailyLimitReached, isDailyTargetReached } from "../storage/trades.js";
+import { getSignal, openTrade, updateSignalStatus, isDailyLimitReached, isDailyTargetReached, getDailyPnl } from "../storage/trades.js";
 import { checkRiskRules } from "../strategy/risk.js";
 import { analyzeMacro } from "../analysis/macro.js";
 import { logError, logWarn, logInfo } from "./error_tracker.js";
@@ -69,7 +69,8 @@ export async function executeSignal(signalId) {
     score: signal.score,
     macroAnalysis: macro,
     availableMargin: balance?.available ?? null,
-    totalCapital:    balance?.total    ?? null,
+    totalCapital:    balance?.total    ?? liveCapital,
+    dailyPnl:        getDailyPnl(),
   });
 
   if (!riskCheck.allowed) {

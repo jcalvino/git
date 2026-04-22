@@ -1,23 +1,73 @@
+# ─────────────────────────────────────────────
+#  Git Ignore — Protege dados sensíveis
+# ─────────────────────────────────────────────
+
 # Dependencies
 node_modules/
 dashboard/node_modules/
 
-# Environment — NEVER commit API keys
+# Environment — NEVER commit API keys / segredos
 .env
+.env.local
+.env.*.local
+.env.production
+.env.development
+*.key
+*.pem
+*.p12
+*.pfx
+id_rsa*
+.ssh/
 
-# Database
+# Database (contém histórico de trades e P&L)
 data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
 
 # Logs
 logs/
 *.log
+.fuse_hidden*
 
-# Screenshots
+# Scanner / monitor state (contém snapshots do mercado)
+last-scan.json
+market_metrics.json
+monitors_state.json
+pids.json
+
+# Screenshots (podem conter dados de conta)
 screenshots/
+*.png.bak
 
 # Build output
 dashboard/dist/
+dashboard/.vite/
+dist/
 
-# OS
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
 .DS_Store
 Thumbs.db
+
+# Node / npm
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm/
+.node_repl_history
+
+# Backup
+*.bak
+*.orig
+*.old
+
+# Python / misc
+__pycache__/
+*.pyc
