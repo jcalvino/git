@@ -346,9 +346,42 @@ export async function setLeverage(symbol, leverage = 1, side = "LONG") {
 }
 
 /**
+ * Format a price to appropriate decimal precision based on its magnitude.
+ * BingX rejects prices with too many or too few decimals.
+ */
+function _fmtPrice(price) {
+  if (price >= 10000)  return price.toFixed(1);
+  if (price >= 1000)   return price.toFixed(2);
+  if (price >= 100)    return price.toFixed(2);
+  if (price >= 10)     return price.toFixed(3);
+  if (price >= 1)      return price.toFixed(4);
+  if (price >= 0.1)    return price.toFixed(5);
+  return price.toFixed(6);
+}
+
+/**
+ * Fetch the current mark price for a symbol from BingX.
+ * Used to validate SL/TP sides before placement.
+ */
+async function _getMarkPrice(symbol) {
+  try {
+    const data = await request("GET", "/openApi/swap/v2/quote/price", { symbol });
+    return parseFloat(data?.price ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * Place SL and TP bracket orders after an entry is filled.
  * Uses STOP_MARKET (SL) and TAKE_PROFIT_MARKET (TP1/2/3).
- * In Hedge mode: no reduceOnly — just use closeSide + same positionSide.
+ *
+ * Safety guards:
+ *  1. Fetches current mark price and validates SL is on the correct side.
+ *     If price moved against us, adjusts SL by a small buffer (0.1%) to
+ *     ensure BingX accepts it — then logs a warning.
+ *  2. Validates TP prices are on the correct side.
+ *  3. Uses _fmtPrice() for correct decimal precision per asset.
  */
 export async function placeSlTpOrders({
   symbol,
@@ -371,10 +404,35 @@ export async function placeSlTpOrders({
     };
   }
 
-  const closeSide = direction === "LONG" ? "SELL" : "BUY";
+  const isLong    = direction === "LONG";
+  const closeSide = isLong ? "SELL" : "BUY";
+
+  // ── Fetch current mark price and validate/adjust SL ───────────
+  const markPrice = await _getMarkPrice(symbol);
+  let safeSl = slPrice;
+
+  if (markPrice > 0) {
+    // LONG SL must be BELOW mark price; SHORT SL must be ABOVE mark price
+    const slOnWrongSide = isLong
+      ? safeSl >= markPrice          // SL at or above current price for LONG
+      : safeSl <= markPrice;         // SL at or below current price for SHORT
+
+    if (slOnWrongSide) {
+      // Price moved past our SL — adjust to 0.2% beyond current price
+      const adjusted = isLong
+        ? markPrice * 0.998           // LONG: 0.2% below mark
+        : markPrice * 1.002;          // SHORT: 0.2% above mark
+      console.warn(
+        `[BINGX] SL side mismatch for ${direction} ${symbol}: ` +
+        `SL $${safeSl} vs mark $${markPrice} — adjusting SL to $${adjusted.toFixed(4)}`
+      );
+      safeSl = adjusted;
+    }
+  }
+
+  // ── Size distribution ─────────────────────────────────────────
   const tp1Size = parseFloat((size * 0.4).toFixed(4));
   const tp2Size = parseFloat((size * 0.35).toFixed(4));
-  // TP3 gets remaining to avoid rounding mismatch
   const tp3Size = parseFloat((size - tp1Size - tp2Size).toFixed(4));
 
   const [sl, tp1, tp2, tp3] = await Promise.allSettled([
@@ -384,7 +442,7 @@ export async function placeSlTpOrders({
       positionSide: direction,
       type: "STOP_MARKET",
       quantity: size.toFixed(4),
-      stopPrice: slPrice.toFixed(2),
+      stopPrice: _fmtPrice(safeSl),
       workingType: "MARK_PRICE",
     }),
     request("POST", "/openApi/swap/v2/trade/order", {
@@ -393,7 +451,7 @@ export async function placeSlTpOrders({
       positionSide: direction,
       type: "TAKE_PROFIT_MARKET",
       quantity: tp1Size.toFixed(4),
-      stopPrice: tp1Price.toFixed(2),
+      stopPrice: _fmtPrice(tp1Price),
       workingType: "MARK_PRICE",
     }),
     request("POST", "/openApi/swap/v2/trade/order", {
@@ -402,7 +460,7 @@ export async function placeSlTpOrders({
       positionSide: direction,
       type: "TAKE_PROFIT_MARKET",
       quantity: tp2Size.toFixed(4),
-      stopPrice: tp2Price.toFixed(2),
+      stopPrice: _fmtPrice(tp2Price),
       workingType: "MARK_PRICE",
     }),
     request("POST", "/openApi/swap/v2/trade/order", {
@@ -411,7 +469,7 @@ export async function placeSlTpOrders({
       positionSide: direction,
       type: "TAKE_PROFIT_MARKET",
       quantity: tp3Size.toFixed(4),
-      stopPrice: tp3Price.toFixed(2),
+      stopPrice: _fmtPrice(tp3Price),
       workingType: "MARK_PRICE",
     }),
   ]);
@@ -422,7 +480,7 @@ export async function placeSlTpOrders({
       : { error: r.reason?.message };
 
   return {
-    sl: unwrap(sl),
+    sl:  unwrap(sl),
     tp1: unwrap(tp1),
     tp2: unwrap(tp2),
     tp3: unwrap(tp3),

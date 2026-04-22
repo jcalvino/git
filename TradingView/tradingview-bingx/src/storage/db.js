@@ -14,9 +14,13 @@ if (!existsSync(dbDir)) mkdirSync(dbDir, { recursive: true });
 
 export const db = new DatabaseSync(config.dbPath);
 
-// Enable WAL mode for better concurrent read performance
+// WAL mode: allows concurrent reads while one writer is active
 db.exec("PRAGMA journal_mode = WAL");
+// Wait up to 5s before giving up on a locked write — eliminates "database is locked" errors
+db.exec("PRAGMA busy_timeout = 5000");
 db.exec("PRAGMA foreign_keys = ON");
+// Reduce fsync calls — safe with WAL, improves write throughput
+db.exec("PRAGMA synchronous = NORMAL");
 
 // ── Schema ─────────────────────────────────────────────────────
 db.exec(`

@@ -130,11 +130,17 @@ export async function generateSignal(symbol, technicalAnalysis, macroCache = nul
   if (macro?.context?.overallBias) {
     fullRationale.push(`Macro bias (rules.json): ${macro.context.overallBias}`);
   }
-  // Add scale-in risk note to rationale
-  fullRationale.push(
-    `Scale-in: ${scale.ENTRIES} entries × $${riskDollars.toFixed(2)} risk each = ` +
-    `$${sizing.totalMaxRisk.toFixed(2)} max total if all stops hit simultaneously`
-  );
+  // Add entry risk note to rationale
+  if (scale.ENABLED && scale.ENTRIES > 1) {
+    fullRationale.push(
+      `Scale-in: ${scale.ENTRIES} entries × $${riskDollars.toFixed(2)} risk each = ` +
+      `$${sizing.totalMaxRisk.toFixed(2)} max total if all stops hit simultaneously`
+    );
+  } else {
+    fullRationale.push(
+      `Single entry: $${riskDollars.toFixed(2)} risk | position value $${sizing.positionValue.toFixed(2)}`
+    );
+  }
 
   // Determine trade type — on 15min all setups are DAY trades
   const TF = STRATEGY.TIMEFRAMES;

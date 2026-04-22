@@ -3,6 +3,7 @@ import React from "react";
 export function StatsPanel({ stats, overview }) {
   const balance = overview?.balance ?? {};
   const capital = balance.total ?? 200;
+  const available = balance.available;
 
   // Use total P&L (realized + unrealized) for accurate display
   const realizedPnl = stats?.totalPnl ?? 0;
@@ -16,7 +17,7 @@ export function StatsPanel({ stats, overview }) {
     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
       <StatCard
         label="Total Capital"
-        value={`$${capital.toFixed(2)}`}
+        value={`$${capital.toFixed(2)}${available !== undefined ? ` ($${available.toFixed(2)})` : ""}`}
         sub={`${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)} (${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%)`}
         subColor={totalPnl >= 0 ? "text-positive" : "text-negative"}
         detail={unrealizedPnl !== 0 ? `Realizados: ${realizedPnl >= 0 ? "+" : ""}$${realizedPnl.toFixed(2)} | Abertos: ${unrealizedPnl >= 0 ? "+" : ""}$${unrealizedPnl.toFixed(2)}` : undefined}

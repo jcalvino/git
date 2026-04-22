@@ -5,48 +5,44 @@
 
 export const STRATEGY = {
   // ── Assets (BingX USDT-M Perpetual Futures symbols) ───────────
-  // These are the symbols used for order execution on BingX.
-  // For TradingView chart analysis, see SYMBOL_TV_MAP below.
+  // NCC* = BingX non-crypto contracts (commodities, FX, stocks)
+  // NCCO = commodities | NCFX = forex | NCSK = stocks
   SYMBOLS: [
-    // Tier 1 — highest liquidity
+    // Tier 1 — highest liquidity crypto
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
     // Tier 2 — established alts
     "ADAUSDT", "LINKUSDT", "NEARUSDT", "UNIUSDT", "AAVEUSDT",
     // Tier 3 — newer / higher volatility
     "TRXUSDT", "SUIUSDT", "ONDOUSDT", "ENAUSDT", "HYPEUSDT",
-    // Commodities — high probability in current macro environment
-    // Gold: safe-haven demand, de-dollarization, central bank buying (ATH bull run)
-    // Silver: follows gold with lag; gold/silver ratio compression likely
-    // WTI: geopolitical risk + tariff demand uncertainty → high volatility for day trading
-    "XAUUSDT", "XAGUSDT", "WTIUSDT",
+    // Commodities — precious metals
+    "NCCOGOLD2USD-USDT",        // Gold (XAU)
+    "NCCOXAG2USD-USDT",         // Silver (XAG)
+    "NCCOXPT2USD-USDT",         // Platinum (XPT)
+    // Commodities — energy (7*24 = around-the-clock perpetuals)
+    "NCCO7241OILBRENT2USD-USDT", // Oil Brent 7*24
+    "NCCO7241OILWTI2USD-USDT",   // Oil WTI 7*24
+    "NCCO7241NATGAS2USD-USDT",   // Natural Gas 7*24
+    "NCCOGASOLINE2USD-USDT",     // Gasoline (RBOB)
+    // Commodities — agriculture
+    "NCCOSOYBEANS2USD-USDT",    // Soybeans
+    "NCCOWHEAT2USD-USDT",       // Wheat
+    "NCCOCOCOA2USD-USDT",       // Cocoa
+    // Commodities — metals
+    "NCCOCOPPER2USD-USDT",      // Copper
+    "NCCOALUMINIUM2USD-USDT",   // Aluminium
+    // Forex
+    "NCFXEUR2USD-USDT",         // EUR/USD
+    // Stocks (CFD)
+    "NCSKTSLA2USD-USDT",        // Tesla
+    "NCSKNVDA2USD-USDT",        // NVIDIA
+    "NCSKGOOGL2USD-USDT",       // Google
+    "NCSKAMZN2USD-USDT",        // Amazon
+    "NCSKMSFT2USD-USDT",        // Microsoft
   ],
-
-  // ── TradingView Symbol Map ─────────────────────────────────────
-  // Maps each BingX symbol to its TradingView chart symbol.
-  // Most symbols are identical; override only when they differ.
-  SYMBOL_TV_MAP: {
-    BTCUSDT:  "BTCUSDT",
-    ETHUSDT:  "ETHUSDT",
-    SOLUSDT:  "SOLUSDT",
-    BNBUSDT:  "BNBUSDT",
-    XRPUSDT:  "XRPUSDT",
-    ADAUSDT:  "ADAUSDT",
-    LINKUSDT: "LINKUSDT",
-    NEARUSDT: "NEARUSDT",
-    UNIUSDT:  "UNIUSDT",
-    AAVEUSDT: "AAVEUSDT",
-    TRXUSDT:  "TRXUSDT",
-    SUIUSDT:  "SUIUSDT",
-    ONDOUSDT: "ONDOUSDT",
-    ENAUSDT:  "ENAUSDT",
-    HYPEUSDT: "HYPEUSDT",
-    XAUUSDT:  "XAUUSD",   // Gold: TradingView uses XAUUSD (no T)
-    XAGUSDT:  "XAGUSD",   // Silver: TradingView XAGUSD
-    WTIUSDT:  "USOIL",    // WTI Crude Oil: TradingView TVC:USOIL
-  },
 
   // ── Per-Symbol Config ──────────────────────────────────────────
   SYMBOL_CONFIG: {
+    // Crypto
     BTCUSDT:  { enabled: true },
     ETHUSDT:  { enabled: true },
     SOLUSDT:  { enabled: true },
@@ -62,65 +58,123 @@ export const STRATEGY = {
     ONDOUSDT: { enabled: true },
     ENAUSDT:  { enabled: true },
     HYPEUSDT: { enabled: true },
-    XAUUSDT:  { enabled: true },
-    XAGUSDT:  { enabled: true },
-    WTIUSDT:  { enabled: true },
+    // Commodities — precious metals
+    "NCCOGOLD2USD-USDT":         { enabled: true },
+    "NCCOXAG2USD-USDT":          { enabled: true },
+    "NCCOXPT2USD-USDT":          { enabled: true },
+    // Commodities — energy
+    "NCCO7241OILBRENT2USD-USDT": { enabled: true },
+    "NCCO7241OILWTI2USD-USDT":   { enabled: true },
+    "NCCO7241NATGAS2USD-USDT":   { enabled: true },
+    "NCCOGASOLINE2USD-USDT":     { enabled: true },
+    // Commodities — agriculture
+    "NCCOSOYBEANS2USD-USDT":     { enabled: true },
+    "NCCOWHEAT2USD-USDT":        { enabled: true },
+    "NCCOCOCOA2USD-USDT":        { enabled: true },
+    // Commodities — metals
+    "NCCOCOPPER2USD-USDT":       { enabled: true },
+    "NCCOALUMINIUM2USD-USDT":    { enabled: true },
+    // Forex
+    "NCFXEUR2USD-USDT":          { enabled: true },
+    // Stocks
+    "NCSKTSLA2USD-USDT":         { enabled: true },
+    "NCSKNVDA2USD-USDT":         { enabled: true },
+    "NCSKGOOGL2USD-USDT":        { enabled: true },
+    "NCSKAMZN2USD-USDT":         { enabled: true },
+    "NCSKMSFT2USD-USDT":         { enabled: true },
   },
 
   // ── Per-Symbol SL Distance (15-min Day Trading) ───────────────
-  // Tighter than daily — 15min ATR is ~40-60% of daily ATR.
-  // Each scale entry has its own individual SL at this distance.
   // If a symbol is not listed here, STRATEGY.SL_PCT (0.5%) is used.
   SYMBOL_SL_PCT: {
-    // Tier 1
-    BTCUSDT:  0.005, // 0.5% — deep liquidity, 15min ATR ~$300-500
+    // Crypto — Tier 1
+    BTCUSDT:  0.005, // 0.5%
     ETHUSDT:  0.006, // 0.6%
-    SOLUSDT:  0.008, // 0.8% — higher beta, wider 15min candles
+    SOLUSDT:  0.008, // 0.8%
     BNBUSDT:  0.006, // 0.6%
-    XRPUSDT:  0.008, // 0.8% — news spikes common
-    // Tier 2
-    ADAUSDT:  0.008, // 0.8%
-    LINKUSDT: 0.008, // 0.8%
-    NEARUSDT: 0.010, // 1.0% — smaller cap, wider spread
-    UNIUSDT:  0.008, // 0.8%
-    AAVEUSDT: 0.008, // 0.8%
-    // Tier 3 — wider for high volatility
-    TRXUSDT:  0.008, // 0.8%
-    SUIUSDT:  0.010, // 1.0% — newer, erratic 15min candles
-    ONDOUSDT: 0.012, // 1.2% — low cap, high spread
-    ENAUSDT:  0.010, // 1.0%
-    HYPEUSDT: 0.012, // 1.2% — newer token, thin book
-    // Commodities — slightly wider SL due to external market sessions overlap
-    XAUUSDT:  0.008, // 0.8% — Gold 15min moves
-    XAGUSDT:  0.010, // 1.0% — Silver is more volatile than Gold
-    WTIUSDT:  0.012, // 1.2% — Oil has wider 15min swings, news spikes common
+    XRPUSDT:  0.008, // 0.8%
+    // Crypto — Tier 2
+    ADAUSDT:  0.008,
+    LINKUSDT: 0.008,
+    NEARUSDT: 0.010,
+    UNIUSDT:  0.008,
+    AAVEUSDT: 0.008,
+    // Crypto — Tier 3
+    TRXUSDT:  0.008,
+    SUIUSDT:  0.010,
+    ONDOUSDT: 0.012,
+    ENAUSDT:  0.010,
+    HYPEUSDT: 0.012,
+    // Commodities — precious metals
+    "NCCOGOLD2USD-USDT":         0.008, // Gold: moderate ATR
+    "NCCOXAG2USD-USDT":          0.010, // Silver: more volatile than gold
+    "NCCOXPT2USD-USDT":          0.010, // Platinum: similar to silver
+    // Commodities — energy (wider — news & inventory spikes)
+    "NCCO7241OILBRENT2USD-USDT": 0.012, // Oil Brent
+    "NCCO7241OILWTI2USD-USDT":   0.012, // Oil WTI
+    "NCCO7241NATGAS2USD-USDT":   0.015, // Natural Gas: extreme intraday swings
+    "NCCOGASOLINE2USD-USDT":     0.012, // Gasoline
+    // Commodities — agriculture (weather + USDA reports = gap risk)
+    "NCCOSOYBEANS2USD-USDT":     0.012,
+    "NCCOWHEAT2USD-USDT":        0.012,
+    "NCCOCOCOA2USD-USDT":        0.015, // Cocoa: thinner book
+    // Commodities — metals
+    "NCCOCOPPER2USD-USDT":       0.010,
+    "NCCOALUMINIUM2USD-USDT":    0.010,
+    // Forex — tight spreads but leverage amplifies moves
+    "NCFXEUR2USD-USDT":          0.005, // EUR/USD: very liquid, tight ATR
+    // Stocks — session-gapped, wider SL needed
+    "NCSKTSLA2USD-USDT":         0.015, // Tesla: high beta
+    "NCSKNVDA2USD-USDT":         0.012, // NVIDIA
+    "NCSKGOOGL2USD-USDT":        0.010, // Google
+    "NCSKAMZN2USD-USDT":         0.010, // Amazon
+    "NCSKMSFT2USD-USDT":         0.008, // Microsoft: lower beta
   },
 
   // ── Per-Symbol Leverage Caps ───────────────────────────────────
-  // Lower cap / newer assets get lower max leverage to limit exposure.
   SYMBOL_MAX_LEVERAGE: {
-    // Tier 1
-    BTCUSDT:  30,  // Setup 2 (STH) uses 30x on BTC
+    // Crypto — Tier 1
+    BTCUSDT:  30,
     ETHUSDT:  10,
     SOLUSDT:  20,
     BNBUSDT:  20,
     XRPUSDT:  20,
-    // Tier 2
+    // Crypto — Tier 2
     ADAUSDT:  15,
     LINKUSDT: 15,
     NEARUSDT: 10,
     UNIUSDT:  10,
     AAVEUSDT: 10,
-    // Tier 3
+    // Crypto — Tier 3
     TRXUSDT:  15,
     SUIUSDT:  10,
     ONDOUSDT:  5,
     ENAUSDT:  10,
     HYPEUSDT: 10,
-    // Commodities — conservative leverage (external markets, less liquidity at night)
-    XAUUSDT:  10,
-    XAGUSDT:  10,
-    WTIUSDT:   5, // Oil: lower cap — extreme intraday volatility possible
+    // Commodities — precious metals
+    "NCCOGOLD2USD-USDT":         10,
+    "NCCOXAG2USD-USDT":          10,
+    "NCCOXPT2USD-USDT":           5,
+    // Commodities — energy
+    "NCCO7241OILBRENT2USD-USDT":  5,
+    "NCCO7241OILWTI2USD-USDT":    5,
+    "NCCO7241NATGAS2USD-USDT":    3, // Natural gas: extreme volatility
+    "NCCOGASOLINE2USD-USDT":      5,
+    // Commodities — agriculture
+    "NCCOSOYBEANS2USD-USDT":      5,
+    "NCCOWHEAT2USD-USDT":         5,
+    "NCCOCOCOA2USD-USDT":         3,
+    // Commodities — metals
+    "NCCOCOPPER2USD-USDT":        5,
+    "NCCOALUMINIUM2USD-USDT":     5,
+    // Forex
+    "NCFXEUR2USD-USDT":          20, // EUR/USD: very liquid
+    // Stocks
+    "NCSKTSLA2USD-USDT":          5,
+    "NCSKNVDA2USD-USDT":          5,
+    "NCSKGOOGL2USD-USDT":         5,
+    "NCSKAMZN2USD-USDT":          5,
+    "NCSKMSFT2USD-USDT":          5,
   },
 
   // ── Signal Expiry ──────────────────────────────────────────────
@@ -148,9 +202,9 @@ export const STRATEGY = {
   //   if all stops hit simultaneously (e.g. gap on news).
   //   The daily 1% loss limit will halt trading after the first stop out.
   SCALE_IN: {
-    ENABLED:     true,
-    ENTRIES:     3,      // number of scale levels
-    SPACING_PCT: 0.003,  // 0.3% price step between entries (15min range)
+    ENABLED:     false,  // single entry — eliminates 2/3 of opening fees
+    ENTRIES:     1,
+    SPACING_PCT: 0.003,
   },
 
   // ── Daily / Monthly Risk & Profit Limits ─────────────────────
@@ -171,17 +225,17 @@ export const STRATEGY = {
   SL_PCT: 0.005, // 0.5% default SL distance on 15min timeframe
 
   // Minimum confidence score (0–100) for any setup to generate a signal
-  MIN_SCORE: 60,
+  MIN_SCORE: 75,
 
   // Capital reserve — always keep this fraction of total capital free.
   // Ensures the account is never fully deployed; new opportunities can
   // always be taken regardless of how many positions are currently open.
   // Example: $128 capital × 0.20 = $25.60 minimum always available.
-  MIN_FREE_CAPITAL_PCT: 0.20,
+  MIN_FREE_CAPITAL_PCT: 0.10,
 
   // Capital allocated per trade slot (as fraction of total capital).
   // This limits position value per individual entry — not trade count.
-  CAPITAL_ALLOCATION_PCT: 0.20,
+  CAPITAL_ALLOCATION_PCT: 0.10,
 
   // ── Fibonacci Take-Profit Levels (in R multiples) ──────────────
   // Fib extensions: 1.618R, 2.618R, 4.236R from entry → SL distance.
@@ -283,7 +337,7 @@ export const SETUPS = {
     name: "Setup 1 — EMA Pullback na Tendência (15min + 1H)",
     description:
       "EMA9/21/50 stack no 1H define tendência; toque no EMA21 no 15min + vela de reversão = entrada",
-    leverage: 5,
+    leverage: 3,       // reduced from 5x — limits max loss per trade
     sl_pct: 0.005,     // uses SYMBOL_SL_PCT override per asset
     tp_r: { tp1: 1.618, tp2: 2.618, tp3: 4.236 }, // Fibonacci R multiples
     enabled: true,
@@ -348,7 +402,7 @@ export const SETUPS = {
     name: "Setup 3 — Rompimento + Reteste de S/R (1H + 15min)",
     description:
       "Nível-chave do 1H rompido com fechamento + reteste no 15min = entrada na virada de S/R",
-    leverage: 4,
+    leverage: 3,       // reduced from 4x — consistent with EMA Pullback
     sl_pct: 0.007,
     tp_r: { tp1: 1.618, tp2: 2.618, tp3: 4.236 },
     enabled: true,

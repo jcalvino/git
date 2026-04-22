@@ -37,11 +37,11 @@ export function Header({ overview, lastUpdate, onRefresh, mode }) {
             </span>
           </div>
         )}
-        {balance.available !== undefined && (
+        {balance.total !== undefined && (
           <div className="flex items-center gap-1">
-            <span className="text-muted">Balance</span>
+            <span className="text-muted">Equity</span>
             <span className="text-accent font-medium">
-              ${balance.available.toFixed(2)}
+              ${balance.total.toFixed(2)}
             </span>
           </div>
         )}

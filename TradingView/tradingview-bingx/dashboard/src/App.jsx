@@ -4,6 +4,7 @@ import { Header } from "./components/Header.jsx";
 import { StatsPanel } from "./components/StatsPanel.jsx";
 import { EquityCurve } from "./components/EquityCurve.jsx";
 import { OpenPositions } from "./components/OpenPositions.jsx";
+import { PnlBreakdownChart } from "./components/PnlBreakdownChart.jsx";
 import { TradeHistory } from "./components/TradeHistory.jsx";
 import { OnChainPanel } from "./components/OnChainPanel.jsx";
 import { GoalTracker } from "./components/GoalTracker.jsx";
@@ -11,6 +12,8 @@ import { CoinMBalance } from "./components/CoinMBalance.jsx";
 import { ErrorBanner } from "./components/ErrorBanner.jsx";
 import { MonitorsPanel } from "./components/MonitorsPanel.jsx";
 import { RulesPanel } from "./components/RulesPanel.jsx";
+import { ApiHealthPanel } from "./components/ApiHealthPanel.jsx";
+import { ScanResultsGrid } from "./components/ScanResultsGrid.jsx";
 
 const TABS = ["Overview", "Trades", "On-Chain", "Monitoring", "Regras"];
 
@@ -166,33 +169,20 @@ export default function App() {
             {/* Stats row */}
             <StatsPanel stats={stats} overview={overview} />
 
-            {/* Goal + CoinM balance side by side */}
+            {/* Goal + Equity Curve side by side */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               <GoalTracker currentCapital={overview?.balance?.total} />
-              <CoinMBalance coinMBalance={overview?.coinMBalance} />
-            </div>
-
-            {/* Equity Curve — full width */}
-            <div className="bg-card border border-border rounded-lg p-4">
-              <h2 className="text-xs text-muted mb-3 tracking-wider">EQUITY CURVE</h2>
-              <EquityCurve snapshots={overview?.equityCurve ?? []} />
-            </div>
-
-            {/* Open Positions — full width, scrollable */}
-            <div className="bg-card border border-border rounded-lg p-4">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-xs text-muted tracking-wider">OPEN POSITIONS</h2>
-                {openTrades.length > 0 && (
-                  <span className="text-xs text-positive font-medium">
-                    {openTrades.length} active
-                  </span>
-                )}
-              </div>
-              {/* Scroll when more than 3 rows of cards */}
-              <div className="overflow-y-auto max-h-96">
-                <OpenPositions trades={openTrades} onClose={closeTrade} horizontal />
+              <div className="bg-card border border-border rounded-lg p-4">
+                <h2 className="text-xs text-muted mb-3 tracking-wider">EQUITY CURVE</h2>
+                <EquityCurve snapshots={overview?.equityCurve ?? []} />
               </div>
             </div>
+
+            {/* CoinM balance — full width */}
+            <CoinMBalance coinMBalance={overview?.coinMBalance} />
+
+            {/* P&L Breakdown Chart */}
+            <PnlBreakdownChart trades={trades} />
           </div>
         )}
 
@@ -230,6 +220,12 @@ export default function App() {
         {/* ── Monitoring ── */}
         {activeTab === "Monitoring" && (
           <div className="space-y-4">
+            {/* API Health */}
+            <ApiHealthPanel />
+
+            {/* Scan Results Grid */}
+            <ScanResultsGrid />
+
             {/* SL/TP Repair */}
             <div className="bg-card border border-border rounded-lg p-4">
               <div className="flex items-center justify-between mb-3">

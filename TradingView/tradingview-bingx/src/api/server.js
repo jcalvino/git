@@ -323,14 +323,31 @@ app.post("/api/positions/refresh", async (_req, res) => {
 // Returns the results of the most recent scanner run, including
 // which setups were evaluated and why none triggered (if applicable).
 app.get("/api/signals/last-scan", (_req, res) => {
-  if (!lastScanSummary.runAt) {
-    return res.json({
-      runAt: null,
-      message: "Nenhum scan executado ainda. Inicie o scanner com: node src/bot/scanner.js --once",
-      results: [],
-    });
+  // Always prefer the on-disk file if it exists — it reflects the last
+  // real scan regardless of whether the scanner ran in this process or not.
+  const scanFile = resolve(__rootDir, "data/last-scan.json");
+  if (existsSync(scanFile)) {
+    try {
+      const saved = JSON.parse(readFileSync(scanFile, "utf8"));
+      // If the in-memory summary is newer, use that instead
+      const memNewer = lastScanSummary.runAt &&
+        new Date(lastScanSummary.runAt) > new Date(saved.runAt ?? 0);
+      return res.json(memNewer ? lastScanSummary : saved);
+    } catch {
+      // File corrupt — fall through to in-memory or empty
+    }
   }
-  res.json(lastScanSummary);
+
+  // No file — use in-memory if available
+  if (lastScanSummary.runAt) {
+    return res.json(lastScanSummary);
+  }
+
+  return res.json({
+    runAt: null,
+    message: "Nenhum scan executado ainda. Execute: npm run scan",
+    results: [],
+  });
 });
 
 // ── Coin-M Diagnostics ─────────────────────────────────────────
