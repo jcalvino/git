@@ -6,8 +6,8 @@
 //    ENTRY_ANALYSIS — primary TF (e.g. "15" for 15-min day trading)
 //    TREND_FILTER   — higher TF for trend direction (e.g. "60" for 1h)
 //
-//  No TradingView indicators required — works on any plan (free/paid).
-//  REQUIRES: TradingView Desktop running with CDP on :9222
+//  Data source: Binance Spot REST API (public, no auth required).
+//  REQUIRES: internet access to api.binance.com
 // ─────────────────────────────────────────────────────────────────
 
 import { STRATEGY } from "../config/strategy.js";
@@ -63,7 +63,7 @@ async function _fetchWeeklyFixed(symbol, setTimeframe, getOhlcv) {
  * so all downstream consumers (setups, scoring) stay compatible.
  *
  * @param {string} symbol    — e.g. "BTCUSDT"
- * @param {object} mcpTools  — adapter returned by createMcpAdapter()
+ * @param {object} mcpTools  — adapter returned by createBinanceAdapter()
  * @returns {TechnicalAnalysis}
  */
 export async function analyzeTechnical(symbol, mcpTools) {
@@ -462,33 +462,205 @@ function calcRsi(closes, period = 14) {
   return 100 - 100 / (1 + avgGain / avgLoss);
 }
 
-// ── MCP Tool Adapter ──────────────────────────────────────────
-// Connects analyzeTechnical to the TradingView Desktop via CDP.
-// Only needs setSymbol, setTimeframe, getOhlcv, getQuote.
+// ── Binance + BingX Hybrid Adapter ───────────────────────────
+// Primary source: Binance Spot public REST (no auth).
+// Fallback source: BingX Perpetuals public REST (no auth).
+//
+// Routing rules:
+//   • NCC* / NCFX* / NCSK* symbols → BingX native (already in BingX format)
+//   • HYPEUSDT                      → BingX (convert to HYPE-USDT)
+//   • everything else               → Binance Spot
 
-export async function createMcpAdapter() {
-  try {
-    const tvPath = new URL(
-      "../../tv-mcp/src/core/index.js",
-      import.meta.url
-    );
-    const core = await import(tvPath.href);
+const BINANCE_BASE = "https://api.binance.com";
+const BINGX_PUBLIC = "https://open-api.bingx.com";
 
-    return {
-      setSymbol: (symbol) => core.chart.setSymbol({ symbol }),
-      setTimeframe: (timeframe) => core.chart.setTimeframe({ timeframe }),
-      getOhlcv: (opts) => core.data.getOhlcv(opts),
-      getQuote: () => core.data.getQuote({}),
-      // Available for other modules (orderbook, etc.) if needed:
-      getStudyValues: () => core.data.getStudyValues(),
-      manageIndicator: (opts) => core.chart.manageIndicator(opts),
-    };
-  } catch (err) {
-    throw new Error(
-      "Cannot connect to TradingView. Make sure TradingView Desktop is running\n" +
-        "with CDP enabled (:9222) and tv-mcp is configured.\n" +
-        "Run: .\\scripts\\launch_tv_debug.bat\n" +
-        `Details: ${err.message}`
-    );
-  }
+// Returns true if this symbol must be fetched from BingX
+function _isBingxSymbol(symbol) {
+  // NCC*/NCFX*/NCSK* are already BingX native contract names (contain "-USDT")
+  if (symbol.startsWith("NCC") || symbol.startsWith("NCFX") || symbol.startsWith("NCSK")) return true;
+  // HYPE not on Binance Spot
+  if (symbol === "HYPEUSDT") return true;
+  return false;
 }
+
+// Convert internal symbol to BingX API format
+// NCC*/NCFX*/NCSK* already have the correct format (e.g. "NCCOGOLD2USD-USDT")
+// Crypto exceptions: "HYPEUSDT" → "HYPE-USDT"
+function _toBingxSymbol(symbol) {
+  if (symbol.includes("-")) return symbol; // already BingX format
+  return symbol.replace("USDT", "-USDT");
+}
+
+// Internal TF string → Binance/BingX interval (both use same strings)
+const TF_TO_INTERVAL = {
+  "1":   "1m",
+  "3":   "3m",
+  "5":   "5m",
+  "15":  "15m",
+  "30":  "30m",
+  "60":  "1h",
+  "120": "2h",
+  "240": "4h",
+  "D":   "1d",
+  "W":   "1w",
+};
+
+/**
+ * Fetch OHLCV from BingX perpetuals public API.
+ */
+async function _bingxOhlcv(symbol, interval, count) {
+  const bingxSym = _toBingxSymbol(symbol);
+  const url =
+    `${BINGX_PUBLIC}/openApi/swap/v2/quote/klines` +
+    `?symbol=${encodeURIComponent(bingxSym)}&interval=${interval}&limit=${count}`;
+
+  const res = await fetch(url);
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`[BingX] klines error for ${bingxSym}/${interval} — HTTP ${res.status}: ${body}`);
+  }
+  const json = await res.json();
+  // BingX code 109415 = "symbol is pause currently" — skip gracefully
+  if (json.code === 109415) {
+    const err = new Error(`[BingX] symbol paused: ${bingxSym}`);
+    err.code = "SYMBOL_PAUSED";
+    throw err;
+  }
+  const raw  = json.data ?? json;
+  if (!Array.isArray(raw)) throw new Error(`[BingX] unexpected klines response for ${bingxSym}`);
+
+  // BingX kline: [openTime, open, high, low, close, volume, ...]
+  return raw.map((k) => ({
+    time:  Math.floor((Array.isArray(k) ? k[0] : k.openTime) / 1000),
+    open:  parseFloat(Array.isArray(k) ? k[1] : k.open),
+    high:  parseFloat(Array.isArray(k) ? k[2] : k.high),
+    low:   parseFloat(Array.isArray(k) ? k[3] : k.low),
+    close: parseFloat(Array.isArray(k) ? k[4] : k.close),
+  }));
+}
+
+/**
+ * Fetch current price from BingX perpetuals public API.
+ */
+async function _bingxQuote(symbol) {
+  const bingxSym = _toBingxSymbol(symbol);
+  const url = `${BINGX_PUBLIC}/openApi/swap/v2/quote/price?symbol=${encodeURIComponent(bingxSym)}`;
+
+  const res = await fetch(url);
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`[BingX] ticker error for ${bingxSym} — HTTP ${res.status}: ${body}`);
+  }
+  const json  = await res.json();
+  // BingX code 109415 = "symbol is pause currently" — skip gracefully
+  if (json.code === 109415) {
+    const err = new Error(`[BingX] symbol paused: ${bingxSym}`);
+    err.code = "SYMBOL_PAUSED";
+    throw err;
+  }
+  const price = parseFloat(json.data?.price ?? json.price ?? 0);
+  if (!price) throw new Error(`[BingX] invalid price response for ${bingxSym}: ${JSON.stringify(json)}`);
+  return price;
+}
+
+/**
+ * Creates a hybrid Binance/BingX data adapter compatible with analyzeTechnical().
+ *
+ * The adapter is stateful: setSymbol() and setTimeframe() update internal
+ * state; subsequent getOhlcv() / getQuote() calls use that state.
+ *
+ * @returns {{ setSymbol, setTimeframe, getOhlcv, getQuote }}
+ */
+export function createBinanceAdapter() {
+  let _symbol   = null;
+  let _interval = "15m";
+
+  return {
+    /** Store the active symbol (no network call needed). */
+    setSymbol(symbol) {
+      _symbol = symbol;
+    },
+
+    /** Map internal TF string to interval string and store it. */
+    setTimeframe(tf) {
+      const interval = TF_TO_INTERVAL[tf];
+      if (!interval) {
+        throw new Error(`[Adapter] Unknown timeframe: "${tf}". ` +
+          `Supported: ${Object.keys(TF_TO_INTERVAL).join(", ")}`);
+      }
+      _interval = interval;
+    },
+
+    /**
+     * Fetch OHLCV bars — Binance for most symbols, BingX for commodities/HYPE.
+     * Returns { bars: [{ time, open, high, low, close }] }
+     */
+    async getOhlcv({ count }) {
+      if (!_symbol) throw new Error("[Adapter] setSymbol() must be called before getOhlcv()");
+
+      if (_isBingxSymbol(_symbol)) {
+        const bars = await _bingxOhlcv(_symbol, _interval, count);
+        return { bars };
+      }
+
+      const url =
+        `${BINANCE_BASE}/api/v3/klines` +
+        `?symbol=${encodeURIComponent(_symbol)}` +
+        `&interval=${_interval}` +
+        `&limit=${count}`;
+
+      const res = await fetch(url);
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(
+          `[Binance] klines error for ${_symbol}/${_interval} — ` +
+          `HTTP ${res.status}: ${body}`
+        );
+      }
+
+      const raw = await res.json();
+      // Binance kline array: [openTime, open, high, low, close, volume, …]
+      const bars = raw.map(([time, open, high, low, close]) => ({
+        time:  Math.floor(time / 1000),
+        open:  parseFloat(open),
+        high:  parseFloat(high),
+        low:   parseFloat(low),
+        close: parseFloat(close),
+      }));
+
+      return { bars };
+    },
+
+    /**
+     * Fetch current price — Binance for most symbols, BingX for commodities/HYPE.
+     * Returns { last, close }
+     */
+    async getQuote() {
+      if (!_symbol) throw new Error("[Adapter] setSymbol() must be called before getQuote()");
+
+      if (_isBingxSymbol(_symbol)) {
+        const price = await _bingxQuote(_symbol);
+        return { last: price, close: price };
+      }
+
+      const url =
+        `${BINANCE_BASE}/api/v3/ticker/price` +
+        `?symbol=${encodeURIComponent(_symbol)}`;
+
+      const res = await fetch(url);
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(
+          `[Binance] ticker error for ${_symbol} — HTTP ${res.status}: ${body}`
+        );
+      }
+
+      const data  = await res.json();
+      const price = parseFloat(data.price);
+      return { last: price, close: price };
+    },
+  };
+}
+
+// Backward-compatible alias
+export const createMcpAdapter = createBinanceAdapter;

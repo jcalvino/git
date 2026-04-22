@@ -4,11 +4,12 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { placeOrder, placeLimitOrder, setLeverage, getPositions, getBalance, placeSlTpOrders } from "../exchanges/bingx.js";
-import { getSignal, openTrade, updateSignalStatus } from "../storage/trades.js";
+import { getSignal, openTrade, updateSignalStatus, isDailyLimitReached, isDailyTargetReached } from "../storage/trades.js";
 import { checkRiskRules } from "../strategy/risk.js";
 import { analyzeMacro } from "../analysis/macro.js";
-import { logError, logWarn } from "./error_tracker.js";
+import { logError, logWarn, logInfo } from "./error_tracker.js";
 import config from "../config/index.js";
+import { STRATEGY } from "../config/strategy.js";
 
 /**
  * Execute a trade from an approved signal.
@@ -27,6 +28,32 @@ export async function executeSignal(signalId) {
     return {
       success: false,
       error: `Signal ${signalId} is ${signal.status}, not PENDING_APPROVAL`,
+    };
+  }
+
+  // ── Daily loss limit — block execution, analysis already ran ──
+  const liveCapital = config.capitalUsdt;
+  if (isDailyLimitReached(liveCapital, STRATEGY.DAILY_RISK_PCT)) {
+    updateSignalStatus(signalId, "REJECTED");
+    logInfo("EXECUTOR", `Daily loss limit active — signal #${signalId} blocked`, {
+      symbol: signal.symbol, direction: signal.direction,
+    });
+    return {
+      success: false,
+      error: "Daily loss limit reached — no new trades until tomorrow",
+    };
+  }
+
+  // ── Daily profit target — block execution if hard stop is set ──
+  const profitTarget = STRATEGY.DAILY_PROFIT_TARGET ?? 0;
+  if (profitTarget > 0 && isDailyTargetReached(profitTarget)) {
+    updateSignalStatus(signalId, "REJECTED");
+    logInfo("EXECUTOR", `Daily profit target active — signal #${signalId} blocked`, {
+      symbol: signal.symbol, direction: signal.direction,
+    });
+    return {
+      success: false,
+      error: `Daily profit target ($${profitTarget}) reached — no new trades until tomorrow`,
     };
   }
 
@@ -56,7 +83,11 @@ export async function executeSignal(signalId) {
   }
 
   // Set leverage for the correct side before placing orders
-  const bingxSymbol = signal.symbol.replace("USDT", "-USDT");
+  // NCC*/NCFX*/NCSK* symbols already contain a hyphen — pass through unchanged.
+  // Crypto symbols end in "USDT" without hyphen → convert to BingX format.
+  const bingxSymbol = signal.symbol.includes("-")
+    ? signal.symbol
+    : signal.symbol.slice(0, -4) + "-USDT";
   await setLeverage(bingxSymbol, signal.leverage ?? 1, signal.direction).catch((err) =>
     console.warn(`Could not set leverage: ${err.message}`)
   );
@@ -156,16 +187,39 @@ export async function executeSignal(signalId) {
     );
   }
 
-  // Verify SL specifically — surface failure prominently
-  if (slTpResult) {
+  // ── SL verification — CRITICAL: close trade if SL could not be placed ──
+  const slFailed =
+    !slTpResult ||                                        // placeSlTpOrders threw
+    slTpResult.sl?.paper ||                               // paper mode (ok)
+    (!slTpResult.sl?.orderId && !slTpResult.sl?.paper);  // real mode, no orderId
+
+  if (slTpResult && !slTpResult.sl?.paper) {
     const slOk = slTpResult.sl?.orderId && !slTpResult.sl?.error;
     if (!slOk) {
       const slErr = slTpResult.sl?.error ?? "unknown error";
-      console.error(`[EXECUTOR] SL order FAILED on trade #${tradeId}: ${slErr}`);
+      console.error(`[EXECUTOR] ⚠ SL FAILED on trade #${tradeId} ${signal.direction} ${signal.symbol}: ${slErr}`);
       logError("error", "EXECUTOR",
-        `CRITICAL: No SL on trade #${tradeId} ${signal.direction} ${signal.symbol} — BingX rejected SL order`,
+        `CRITICAL: SL placement failed on trade #${tradeId} — closing position immediately to prevent unprotected exposure`,
         { tradeId, slPrice: signal.sl, error: slErr, symbol: signal.symbol }
       );
+
+      // ── Safety close: market-close the position immediately ──────
+      try {
+        const { closeTrade } = await import("./executor.js");
+        await closeTrade(tradeId, "SL_PLACEMENT_FAILED");
+        console.error(`[EXECUTOR] ⚠ Trade #${tradeId} closed immediately — no SL was accepted by BingX`);
+        return {
+          success: false,
+          tradeId,
+          error: `SL placement failed (${slErr}) — position closed immediately for safety`,
+        };
+      } catch (closeErr) {
+        console.error(`[EXECUTOR] EMERGENCY: Could not close trade #${tradeId} after SL failure: ${closeErr.message}`);
+        logError("error", "EXECUTOR",
+          `EMERGENCY: Trade #${tradeId} is OPEN WITHOUT SL and could not be closed automatically — MANUAL ACTION REQUIRED`,
+          { tradeId, symbol: signal.symbol, direction: signal.direction }
+        );
+      }
     }
     const tp1Ok = slTpResult.tp1?.orderId && !slTpResult.tp1?.error;
     if (!tp1Ok) {

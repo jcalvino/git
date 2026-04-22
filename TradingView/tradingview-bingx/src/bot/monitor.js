@@ -163,7 +163,20 @@ async function executeTpOrSl(trade, type, price, size) {
       closeTrade(trade.id, price, type);
     }
   } catch (err) {
-    console.error(`  ERROR placing ${type} order: ${err.message}`);
+    // 101205 = "No position to close" — BingX already closed it via its own SL/TP order.
+    // Treat as successful: sync local DB to reflect what BingX did.
+    if (err.message?.includes("101205") || err.message?.includes("No position")) {
+      console.log(
+        `  [MONITOR] ${type} already closed by BingX for trade #${trade.id} ${trade.symbol} — syncing DB`
+      );
+      if (type === "SL" || type === "TP3") {
+        closeTrade(trade.id, price, type);
+      } else {
+        recordPartialClose(trade.id, type, price, size);
+      }
+    } else {
+      console.error(`  ERROR placing ${type} order: ${err.message}`);
+    }
   }
 }
 

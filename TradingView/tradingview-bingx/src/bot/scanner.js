@@ -6,7 +6,9 @@
 // ─────────────────────────────────────────────────────────────────
 
 import { fileURLToPath } from "url";
-import { analyzeTechnical, createMcpAdapter } from "../analysis/technical.js";
+import { writeFileSync, mkdirSync } from "fs";
+import { join, dirname } from "path";
+import { analyzeTechnical, createBinanceAdapter } from "../analysis/technical.js";
 import { analyzeMacro } from "../analysis/macro.js";
 import { generateSignal } from "../strategy/signals.js";
 import { checkPriceMonitors } from "../analysis/price_monitors.js";
@@ -29,14 +31,14 @@ let _isScanning = false;          // lock: skip if previous run still active
 
 // ── Shared last-scan summary (exposed via API) ─────────────────
 export const lastScanSummary = {
-  runAt:          null,
-  capital:        null,
-  dailyPnl:       null,
-  dailyLimited:   false,
+  runAt: null,
+  capital: null,
+  dailyPnl: null,
+  dailyLimited: false,
   dailyTargetHit: false,
-  symbols:        [],
-  results:        [],
-  macroContext:   null,
+  symbols: [],
+  results: [],
+  macroContext: null,
 };
 
 // ── Main Scan ──────────────────────────────────────────────────
@@ -52,45 +54,37 @@ async function runScan() {
   const liveCapital = await refreshCapital();
 
   // ── 2. Daily risk limit check ──────────────────────────────────
-  const dailyPnl   = getDailyPnl();
+  const dailyPnl = getDailyPnl();
   const dayLimited = isDailyLimitReached(liveCapital, STRATEGY.DAILY_RISK_PCT);
 
   if (dayLimited) {
     console.log(
       `[SCANNER] Daily risk limit reached — P&L today: $${dailyPnl.toFixed(2)} / ` +
       `limit: -$${(liveCapital * STRATEGY.DAILY_RISK_PCT).toFixed(2)}. ` +
-      `No new trades until tomorrow.`
+      `Analysis continues; execution blocked in executor.`
     );
-    logInfo("SCANNER", "Daily risk limit reached — trading paused for today", {
+    logInfo("SCANNER", "Daily risk limit reached — analysis continues, execution blocked", {
       dailyPnl: dailyPnl.toFixed(2),
       limit: (liveCapital * STRATEGY.DAILY_RISK_PCT).toFixed(2),
     });
-    lastScanSummary.runAt        = ts;
-    lastScanSummary.dailyPnl     = dailyPnl;
-    lastScanSummary.dailyLimited = true;
-    return [];
   }
 
   // ── 2b. Daily profit target check ─────────────────────────────
   const profitTarget = STRATEGY.DAILY_PROFIT_TARGET ?? 0;
-  if (profitTarget > 0 && isDailyTargetReached(profitTarget)) {
+  const dayTargetHit = profitTarget > 0 && isDailyTargetReached(profitTarget);
+  if (dayTargetHit) {
     const dailyProfit = getDailyProfit();
     console.log(
       `[SCANNER] Daily profit target reached — Profit today: $${dailyProfit.toFixed(2)} / ` +
-      `target: $${profitTarget.toFixed(2)}. No new trades until tomorrow.`
+      `target: $${profitTarget.toFixed(2)}. Analysis continues; execution blocked in executor.`
     );
-    logInfo("SCANNER", "Daily profit target reached — trading paused for today", {
+    logInfo("SCANNER", "Daily profit target reached — analysis continues, execution blocked", {
       dailyProfit: dailyProfit.toFixed(2),
       target: profitTarget.toFixed(2),
     });
-    lastScanSummary.runAt          = ts;
-    lastScanSummary.dailyPnl       = dailyPnl;
-    lastScanSummary.dailyLimited   = false;
-    lastScanSummary.dailyTargetHit = true;
-    return [];
   }
-  lastScanSummary.dailyTargetHit = false;
-  lastScanSummary.dailyLimited   = false;
+  lastScanSummary.dailyTargetHit = dayTargetHit;
+  lastScanSummary.dailyLimited   = dayLimited;
   lastScanSummary.dailyPnl       = dailyPnl;
 
   // ── 3. Sync live BingX positions into local DB ─────────────────
@@ -100,15 +94,15 @@ async function runScan() {
       getCoinMPositions(),
     ]);
     const allLive = [
-      ...(usdtPos.status  === "fulfilled" ? usdtPos.value  : []),
+      ...(usdtPos.status === "fulfilled" ? usdtPos.value : []),
       ...(coinmPos.status === "fulfilled" ? coinmPos.value : []),
     ];
     for (const pos of allLive) upsertBingXPosition(pos);
   } catch { /* paper mode or no API key */ }
 
-  // ── 4. Connect to TradingView + run analysis ───────────────────
+  // ── 4. Fetch market data via Binance + run analysis ───────────
   try {
-    const mcp   = await createMcpAdapter();
+    const mcp = createBinanceAdapter();
     const macro = await analyzeMacro();
 
     // ── Refresh market metrics (BTC dominance, funding, realized price, CVDD, STH) ──
@@ -125,9 +119,9 @@ async function runScan() {
 
     lastScanSummary.macroContext = {
       fearGreed: macro.fearGreed,
-      bias:      macro.context?.overallBias,
+      bias: macro.context?.overallBias,
       hasHighRisk: macro.hasHighRisk,
-      warnings:  macro.riskWarnings?.filter((w) => w.severity === "high").map((w) => w.type) ?? [],
+      warnings: macro.riskWarnings?.filter((w) => w.severity === "high").map((w) => w.type) ?? [],
     };
 
     if (macro.hasHighRisk) {
@@ -144,11 +138,20 @@ async function runScan() {
         continue;
       }
 
-      const tvSymbol = STRATEGY.SYMBOL_TV_MAP?.[symbol] ?? symbol;
       console.log(`[SCANNER] Analyzing ${symbol}...`);
 
       try {
-        const technical = await analyzeTechnical(tvSymbol, mcp);
+        const technical = await analyzeTechnical(symbol, mcp).catch((err) => {
+          if (err.code === "SYMBOL_PAUSED") {
+            console.log(`  → ${symbol}: paused on BingX — skipping`);
+            return null;
+          }
+          throw err;
+        });
+        if (!technical) {
+          results.push({ symbol, signal: { status: "PAUSED", direction: null, score: 0 } });
+          continue;
+        }
         technical.symbol = symbol;
 
         const signal = await generateSignal(symbol, technical, macro);
@@ -185,7 +188,7 @@ async function runScan() {
         if (execResult.success) {
           console.log(`  ✓ Trade #${execResult.tradeId} opened`);
           logInfo("EXECUTOR", `Auto-executed ${signal.direction} ${symbol}`, {
-            tradeId:  execResult.tradeId,
+            tradeId: execResult.tradeId,
             signalId, entry: signal.entry, sl: signal.sl,
           });
 
@@ -279,9 +282,9 @@ async function runScan() {
     logError("error", "SCANNER", `Scan cycle failed: ${err.message}`, {
       stack: err.stack?.slice(0, 300),
     });
-    if (err.message?.includes("TradingView") || err.message?.includes("CDP")) {
-      logError("error", "SCANNER", "TradingView Desktop connection lost — restart required", {
-        hint: "Run: scripts\\launch_tv_debug.bat",
+    if (err.message?.includes("Binance") || err.message?.includes("fetch")) {
+      logError("error", "SCANNER", "Binance API request failed — check network connectivity", {
+        hint: "Verify api.binance.com is reachable",
       });
     }
   }
@@ -290,18 +293,31 @@ async function runScan() {
   console.log(`[SCANNER] Scan complete in ${elapsed}s`);
 
   // Update summary for dashboard /api/signals/last-scan
-  lastScanSummary.runAt   = ts;
+  lastScanSummary.runAt = ts;
   lastScanSummary.capital = liveCapital;
   lastScanSummary.symbols = STRATEGY.SYMBOLS;
   lastScanSummary.results = results.map((r) => ({
-    symbol:     r.symbol,
-    status:     r.signal?.status ?? (r.error ? "ERROR" : "BELOW_THRESHOLD"),
+    symbol: r.symbol,
+    status: r.signal?.status ?? (r.error ? "ERROR" : "BELOW_THRESHOLD"),
     setup_name: r.signal?.setup_name ?? null,
-    score:      r.signal?.score ?? 0,
-    direction:  r.signal?.direction ?? null,
-    tradeId:    r.tradeId ?? null,
-    rationale:  r.signal?.rationale ?? (r.error ? [r.error] : []),
+    score: r.signal?.score ?? 0,
+    direction: r.signal?.direction ?? null,
+    tradeId: r.tradeId ?? null,
+    rationale: r.signal?.rationale ?? (r.error ? [r.error] : []),
   }));
+
+  // Persist to disk so the API server can load it even when running separately
+  try {
+    const dataDir = join(dirname(fileURLToPath(import.meta.url)), "../../data");
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(
+      join(dataDir, "last-scan.json"),
+      JSON.stringify(lastScanSummary, null, 2),
+      "utf8"
+    );
+  } catch (e) {
+    console.warn(`[SCANNER] Could not persist last-scan.json: ${e.message}`);
+  }
 
   return results;
 }
@@ -335,7 +351,7 @@ if (isMain) {
     await runScanWithLock();
     process.exit(0);
   } else {
-    console.log("BTC/ETH Trader — Automated Scanner");
+    console.log("Automated Scanner");
     console.log(`Interval : every ${SCAN_INTERVAL_MS / 1000}s / ${SCAN_INTERVAL_MS / 60000}min (skips if previous run active)`);
     console.log(`Mode     : ${config.paperTrade ? "PAPER TRADE" : "LIVE"}`);
     console.log(`Symbols  : ${STRATEGY.SYMBOLS.join(", ")}\n`);

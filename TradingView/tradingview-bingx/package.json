@@ -17,7 +17,8 @@
     "test:config": "node src/config/index.js",
     "test:technical": "node src/analysis/technical.js",
     "test:signals": "node src/strategy/signals.js",
-    "test:bingx": "node src/exchanges/bingx.js"
+    "test:bingx": "node src/exchanges/bingx.js",
+    "validate-symbols": "node scripts/validate-symbols.js"
   },
   "dependencies": {
     "axios": "^1.7.9",
