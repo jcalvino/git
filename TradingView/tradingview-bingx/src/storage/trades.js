@@ -45,6 +45,25 @@ export function saveSignal(signal) {
   return result.lastInsertRowid;
 }
 
+/**
+ * Parse um row bruto da tabela signals: desserializa colunas JSON
+ * (breakdown, inputs, scale_entries) para facilitar consumo no frontend.
+ */
+function parseSignalRow(row) {
+  if (!row) return null;
+  const parse = (v) => {
+    if (v == null) return null;
+    if (typeof v !== "string") return v;
+    try { return JSON.parse(v); } catch { return v; }
+  };
+  return {
+    ...row,
+    breakdown:     parse(row.breakdown),
+    inputs:        parse(row.inputs),
+    scale_entries: parse(row.scale_entries),
+  };
+}
+
 export function getPendingSignals() {
   return db
     .prepare(`
@@ -383,6 +402,34 @@ export function updatePosition(tradeId, markPrice, unrealizedPnl) {
   `).run(markPrice, unrealizedPnl, tradeId);
 }
 
+/**
+ * Atualiza o SL de um trade e sua posição associada.
+ * Usado pelo break-even trigger após TP1.
+ *
+ * @param {number} tradeId
+ * @param {number} newSlPrice
+ * @param {string} [reason] — livre ("BE", "TRAIL", "MANUAL")
+ */
+export function updateTradeStopLoss(tradeId, newSlPrice, reason = "") {
+  db.prepare(`
+    UPDATE trades SET
+      sl_price   = ?,
+      updated_at = datetime('now')
+    WHERE id = ?
+  `).run(newSlPrice, tradeId);
+
+  db.prepare(`
+    UPDATE positions SET
+      sl_price   = ?,
+      updated_at = datetime('now')
+    WHERE trade_id = ?
+  `).run(newSlPrice, tradeId);
+
+  if (reason) {
+    console.log(`[SL_UPDATE] Trade #${tradeId} SL → $${newSlPrice} (${reason})`);
+  }
+}
+
 export function getOpenPositions() {
   return db.prepare(`
     SELECT p.*, t.direction, t.entry_price as trade_entry, t.trade_type
@@ -477,75 +524,312 @@ export function isDailyTargetReached(targetAmount) {
   return getDailyProfit() >= targetAmount;
 }
 
-// ── Analytics ─────────────────────────────────────────────────
+// ── Weekly / Monthly P&L ──────────────────────────────────────
 
-export function getStats() {
-  const closed = db
-    .prepare(`SELECT pnl, pnl_pct FROM trades WHERE status = 'CLOSED' AND pnl IS NOT NULL`)
-    .all();
+/**
+ * Retorna P&L realizado do mês corrente (primeiro ao último dia).
+ * @returns {{ pnl: number, tradeCount: number, winCount: number, lossCount: number }}
+ */
+export function getMonthlyPnl() {
+  const now = new Date();
+  const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+  const lastDay  = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
 
-  // Get unrealized P&L from open positions
-  const positions = db
-    .prepare(`SELECT unrealized_pnl FROM positions`)
-    .all();
-  const unrealizedPnl = positions.reduce((s, p) => s + (p.unrealized_pnl || 0), 0);
+  const rows = db.prepare(`
+    SELECT pnl FROM trades
+    WHERE DATE(closed_at) BETWEEN ? AND ?
+      AND status IN ('CLOSED', 'STOPPED')
+      AND pnl IS NOT NULL
+  `).all(firstDay, lastDay);
 
-  if (closed.length === 0) {
-    return {
-      totalTrades: 0,
-      winRate: 0,
-      avgPnl: 0,
-      totalPnl: 0,
-      unrealizedPnl: parseFloat(unrealizedPnl.toFixed(2)),
-      totalPnlWithUnrealized: parseFloat(unrealizedPnl.toFixed(2)),
-      maxDrawdown: 0,
-    };
-  }
-
-  const wins = closed.filter((t) => t.pnl > 0);
-  const losses = closed.filter((t) => t.pnl <= 0);
-  const totalPnl = closed.reduce((s, t) => s + t.pnl, 0);
-  const avgPnl = totalPnl / closed.length;
-  const avgWin = wins.length ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0;
-  const avgLoss = losses.length ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0;
-  const expectancy = (wins.length / closed.length) * avgWin + (losses.length / closed.length) * avgLoss;
-
-  // Max drawdown from snapshots
-  const snaps = getSnapshots(365);
-  let peak = 0;
-  let maxDD = 0;
-  for (const s of snaps) {
-    if (s.capital > peak) peak = s.capital;
-    const dd = peak > 0 ? (peak - s.capital) / peak : 0;
-    if (dd > maxDD) maxDD = dd;
-  }
-
-  const totalPnlWithUnrealized = totalPnl + unrealizedPnl;
+  const pnl       = rows.reduce((s, r) => s + (r.pnl ?? 0), 0);
+  const winCount  = rows.filter((r) => r.pnl > 0).length;
+  const lossCount = rows.filter((r) => r.pnl <= 0).length;
 
   return {
-    totalTrades: closed.length,
-    winCount: wins.length,
-    lossCount: losses.length,
-    winRate: parseFloat(((wins.length / closed.length) * 100).toFixed(1)),
-    avgPnl: parseFloat(avgPnl.toFixed(2)),
-    totalPnl: parseFloat(totalPnl.toFixed(2)),
-    unrealizedPnl: parseFloat(unrealizedPnl.toFixed(2)),
-    totalPnlWithUnrealized: parseFloat(totalPnlWithUnrealized.toFixed(2)),
-    avgWin: parseFloat(avgWin.toFixed(2)),
-    avgLoss: parseFloat(avgLoss.toFixed(2)),
-    expectancy: parseFloat(expectancy.toFixed(2)),
-    maxDrawdown: parseFloat((maxDD * 100).toFixed(2)),
+    pnl:        parseFloat(pnl.toFixed(2)),
+    tradeCount: rows.length,
+    winCount,
+    lossCount,
+    winRate:    rows.length ? parseFloat(((winCount / rows.length) * 100).toFixed(1)) : 0,
+    firstDay,
+    lastDay,
   };
 }
 
-// ── Helpers ────────────────────────────────────────────────────
-function parseSignalRow(row) {
-  if (!row) return null;
+/**
+ * Retorna P&L realizado da semana corrente (segunda → domingo).
+ */
+export function getWeeklyPnl() {
+  const now     = new Date();
+  const day     = now.getUTCDay() || 7; // 0=Dom → 7
+  const monday  = new Date(now);
+  monday.setUTCDate(now.getUTCDate() - (day - 1));
+  const first   = monday.toISOString().slice(0, 10);
+  const today   = now.toISOString().slice(0, 10);
+
+  const rows = db.prepare(`
+    SELECT pnl FROM trades
+    WHERE DATE(closed_at) BETWEEN ? AND ?
+      AND status IN ('CLOSED', 'STOPPED')
+      AND pnl IS NOT NULL
+  `).all(first, today);
+
+  const pnl = rows.reduce((s, r) => s + (r.pnl ?? 0), 0);
   return {
-    ...row,
-    breakdown:     row.breakdown     ? JSON.parse(row.breakdown)     : {},
-    inputs:        row.inputs        ? JSON.parse(row.inputs)        : {},
-    rationale:     row.rationale     ? JSON.parse(row.rationale)     : [],
-    scale_entries: row.scale_entries ? JSON.parse(row.scale_entries) : [],
+    pnl:        parseFloat(pnl.toFixed(2)),
+    tradeCount: rows.length,
+    firstDay:   first,
+    today,
+  };
+}
+/**
+ * Série diária de P&L para gráficos de barras.
+ * Retorna array: [{ date: 'YYYY-MM-DD', pnl, tradeCount }]
+ *
+ * @param {number} days - quantos dias retornar (default 30)
+ */
+export function getDailyPnlSeries(days = 30) {
+  const start = new Date();
+  start.setUTCDate(start.getUTCDate() - days + 1);
+  const startIso = start.toISOString().slice(0, 10);
+
+  const rows = db.prepare(`
+    SELECT DATE(closed_at) AS date,
+           COALESCE(SUM(pnl), 0) AS pnl,
+           COUNT(*) AS tradeCount
+    FROM trades
+    WHERE closed_at >= ?
+      AND status IN ('CLOSED', 'STOPPED')
+      AND pnl IS NOT NULL
+    GROUP BY DATE(closed_at)
+    ORDER BY date ASC
+  `).all(startIso);
+
+  return rows.map((r) => ({
+    date: r.date,
+    pnl: parseFloat((r.pnl ?? 0).toFixed(2)),
+    tradeCount: r.tradeCount,
+  }));
+}
+
+/**
+ * Série mensal de P&L para gráficos comparativos.
+ */
+export function getMonthlyPnlSeries(months = 12) {
+  const rows = db.prepare(`
+    SELECT strftime('%Y-%m', closed_at) AS month,
+           COALESCE(SUM(pnl), 0) AS pnl,
+           COUNT(*) AS tradeCount
+    FROM trades
+    WHERE status IN ('CLOSED', 'STOPPED')
+      AND pnl IS NOT NULL
+    GROUP BY month
+    ORDER BY month DESC
+    LIMIT ?
+  `).all(months);
+
+  return rows.reverse().map((r) => ({
+    month: r.month,
+    pnl: parseFloat((r.pnl ?? 0).toFixed(2)),
+    tradeCount: r.tradeCount,
+  }));
+}
+
+/**
+ * Estatísticas por setup (JOIN com signals para obter setup_id).
+ */
+export function getStatsBySetup() {
+  const rows = db.prepare(`
+    SELECT
+      COALESCE(s.setup_id, 'UNKNOWN') AS setup_id,
+      COUNT(t.id) AS trades,
+      SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END) AS wins,
+      SUM(CASE WHEN t.pnl <= 0 THEN 1 ELSE 0 END) AS losses,
+      COALESCE(SUM(t.pnl), 0) AS totalPnl,
+      COALESCE(AVG(t.pnl), 0) AS avgPnl,
+      COALESCE(AVG(CASE WHEN t.sl_price IS NOT NULL AND t.entry_price IS NOT NULL AND t.sl_price != t.entry_price
+                        THEN t.pnl / (t.size * ABS(t.entry_price - t.sl_price))
+                        ELSE NULL END), 0) AS avgR
+    FROM trades t
+    LEFT JOIN signals s ON t.signal_id = s.id
+    WHERE t.status IN ('CLOSED', 'STOPPED')
+      AND t.pnl IS NOT NULL
+    GROUP BY COALESCE(s.setup_id, 'UNKNOWN')
+    ORDER BY totalPnl DESC
+  `).all();
+
+  return rows.map((r) => ({
+    setup_id: r.setup_id,
+    trades: r.trades,
+    wins: r.wins,
+    losses: r.losses,
+    winRate: r.trades > 0 ? parseFloat(((r.wins / r.trades) * 100).toFixed(1)) : 0,
+    totalPnl: parseFloat((r.totalPnl ?? 0).toFixed(2)),
+    avgPnl: parseFloat((r.avgPnl ?? 0).toFixed(2)),
+    avgR: parseFloat((r.avgR ?? 0).toFixed(2)),
+  }));
+}
+
+/**
+ * Estatísticas por símbolo.
+ */
+export function getStatsBySymbol() {
+  const rows = db.prepare(`
+    SELECT
+      symbol,
+      COUNT(*) AS trades,
+      SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) AS wins,
+      SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) AS losses,
+      COALESCE(SUM(pnl), 0) AS totalPnl,
+      COALESCE(AVG(pnl), 0) AS avgPnl
+    FROM trades
+    WHERE status IN ('CLOSED', 'STOPPED')
+      AND pnl IS NOT NULL
+    GROUP BY symbol
+    ORDER BY totalPnl DESC
+  `).all();
+
+  return rows.map((r) => ({
+    symbol: r.symbol,
+    trades: r.trades,
+    wins: r.wins,
+    losses: r.losses,
+    winRate: r.trades > 0 ? parseFloat(((r.wins / r.trades) * 100).toFixed(1)) : 0,
+    totalPnl: parseFloat((r.totalPnl ?? 0).toFixed(2)),
+    avgPnl: parseFloat((r.avgPnl ?? 0).toFixed(2)),
+  }));
+}
+
+/**
+ * Série de drawdown: cumPnl, peak, dd% e dd$ por data.
+ */
+export function getDrawdownSeries(days = 90) {
+  const start = new Date();
+  start.setUTCDate(start.getUTCDate() - days + 1);
+  const startIso = start.toISOString().slice(0, 10);
+
+  const rows = db.prepare(`
+    SELECT DATE(closed_at) AS date,
+           COALESCE(SUM(pnl), 0) AS pnl
+    FROM trades
+    WHERE closed_at >= ?
+      AND status IN ('CLOSED', 'STOPPED')
+      AND pnl IS NOT NULL
+    GROUP BY DATE(closed_at)
+    ORDER BY date ASC
+  `).all(startIso);
+
+  let cum = 0;
+  let peak = 0;
+  return rows.map((r) => {
+    cum += r.pnl ?? 0;
+    if (cum > peak) peak = cum;
+    const ddDollar = cum - peak;
+    const ddPct = peak > 0 ? (ddDollar / peak) * 100 : 0;
+    return {
+      date: r.date,
+      cumulativePnl: parseFloat(cum.toFixed(2)),
+      peak: parseFloat(peak.toFixed(2)),
+      drawdownDollar: parseFloat(ddDollar.toFixed(2)),
+      drawdownPct: parseFloat(ddPct.toFixed(2)),
+    };
+  });
+}
+
+/**
+ * Distribuição por motivo de fechamento.
+ */
+export function getCloseReasonBreakdown() {
+  const rows = db.prepare(`
+    SELECT
+      COALESCE(close_reason, 'UNKNOWN') AS reason,
+      COUNT(*) AS count,
+      COALESCE(SUM(pnl), 0) AS totalPnl
+    FROM trades
+    WHERE status IN ('CLOSED', 'STOPPED')
+      AND pnl IS NOT NULL
+    GROUP BY reason
+    ORDER BY count DESC
+  `).all();
+
+  return rows.map((r) => ({
+    reason: r.reason,
+    count: r.count,
+    totalPnl: parseFloat((r.totalPnl ?? 0).toFixed(2)),
+  }));
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  AGGREGATE STATS  (para StatsPanel e /api/stats)
+// ═══════════════════════════════════════════════════════════════════
+
+export function getStats() {
+  // Trades fechados (inclui STOPPED)
+  const closed = db.prepare(`
+    SELECT pnl
+    FROM trades
+    WHERE status IN ('CLOSED', 'STOPPED')
+      AND pnl IS NOT NULL
+  `).all();
+
+  const totalTrades = closed.length;
+  const wins        = closed.filter((t) => t.pnl > 0);
+  const losses      = closed.filter((t) => t.pnl < 0);
+  const winCount    = wins.length;
+  const lossCount   = losses.length;
+  const winRate     = totalTrades > 0 ? parseFloat(((winCount / totalTrades) * 100).toFixed(1)) : 0;
+  const totalPnl    = closed.reduce((s, t) => s + (t.pnl ?? 0), 0);
+  const avgWin      = wins.length   > 0 ? wins.reduce((s, t) => s + t.pnl, 0)   / wins.length   : 0;
+  const avgLoss     = losses.length > 0 ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0;
+
+  // Expectancy: E = (winRate * avgWin) + (lossRate * avgLoss)
+  const winRateFrac  = totalTrades > 0 ? winCount  / totalTrades : 0;
+  const lossRateFrac = totalTrades > 0 ? lossCount / totalTrades : 0;
+  const expectancy   = (winRateFrac * avgWin) + (lossRateFrac * avgLoss);
+
+  // Unrealized PnL das posicoes abertas
+  const openTrades = db.prepare(`
+    SELECT t.direction, t.entry_price, t.size, p.mark_price, p.unrealized_pnl
+    FROM trades t
+    LEFT JOIN positions p ON p.trade_id = t.id
+    WHERE t.status = 'OPEN'
+  `).all();
+
+  const unrealizedPnl = openTrades.reduce((s, t) => {
+    if (t.unrealized_pnl !== null && t.unrealized_pnl !== undefined && t.unrealized_pnl !== 0) {
+      return s + t.unrealized_pnl;
+    }
+    if (t.mark_price && t.entry_price && t.size) {
+      const diff = t.direction === "LONG"
+        ? (t.mark_price - t.entry_price)
+        : (t.entry_price - t.mark_price);
+      return s + (diff * t.size);
+    }
+    return s;
+  }, 0);
+
+  // Max drawdown (historico 365 dias)
+  let maxDrawdown = 0;
+  try {
+    const series = getDrawdownSeries(365);
+    if (series.length > 0) {
+      maxDrawdown = Math.min(...series.map((d) => d.drawdownDollar ?? 0));
+    }
+  } catch (_err) { /* sem dados */ }
+
+  return {
+    totalTrades,
+    winCount,
+    lossCount,
+    winRate,
+    totalPnl:               parseFloat(totalPnl.toFixed(2)),
+    avgWin:                 parseFloat(avgWin.toFixed(2)),
+    avgLoss:                parseFloat(avgLoss.toFixed(2)),
+    expectancy:             parseFloat(expectancy.toFixed(2)),
+    unrealizedPnl:          parseFloat(unrealizedPnl.toFixed(2)),
+    totalPnlWithUnrealized: parseFloat((totalPnl + unrealizedPnl).toFixed(2)),
+    maxDrawdown:            parseFloat(maxDrawdown.toFixed(2)),
+    openTradeCount:         openTrades.length,
   };
 }

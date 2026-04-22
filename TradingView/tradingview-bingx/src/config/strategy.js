@@ -1,6 +1,17 @@
 // ─────────────────────────────────────────────────────────────────
-//  Strategy Parameters
-//  All trading logic constants live here. Edit to tune the strategy.
+//  Strategy Parameters — Professional Edition (v2)
+//
+//  Filosofia (trader institucional, 30+ anos):
+//    1. "Primeiro preserve o capital, depois maximize o retorno."
+//       — Daily risk baixado de 1.0% para 0.5%. Em $128 = $0.64/dia max.
+//    2. "Trade-runner mode": fecha 50% no TP1 e move SL para break-even.
+//       Trade restante fica livre de risco — capital garantido + upside.
+//    3. Menos é mais. 8 ativos de altíssima liquidez (no lugar de 33).
+//       Para $128 de capital, cobertura excessiva gera noise.
+//    4. Meta mensal: mínimo $100 (piso, não teto). Bot continua operando
+//       mesmo após atingir — esse é o 'bonus'.
+//
+//  Todos os constantes de trading vivem aqui. Editar para ajustar.
 // ─────────────────────────────────────────────────────────────────
 
 export const STRATEGY = {
@@ -41,53 +52,54 @@ export const STRATEGY = {
   ],
 
   // ── Per-Symbol Config ──────────────────────────────────────────
+  // ⚠ PORTFOLIO CURATADO (2026-04-22): para $128 de capital, apenas
+  //   8 ativos ficam ATIVOS. Os outros permanecem configurados (para
+  //   quando o capital crescer) mas com enabled: false.
+  //   Critério: top-5 cripto de maior liquidez + 3 commodities clássicas
+  //   (Gold, Silver, Oil WTI) que compensam dias de choppiness em cripto.
   SYMBOL_CONFIG: {
-    // Crypto
-    BTCUSDT:  { enabled: true },
-    ETHUSDT:  { enabled: true },
-    SOLUSDT:  { enabled: true },
-    BNBUSDT:  { enabled: true },
-    XRPUSDT:  { enabled: true },
-    ADAUSDT:  { enabled: true },
-    LINKUSDT: { enabled: true },
-    NEARUSDT: { enabled: true },
-    UNIUSDT:  { enabled: true },
-    AAVEUSDT: { enabled: true },
-    TRXUSDT:  { enabled: true },
-    SUIUSDT:  { enabled: true },
-    ONDOUSDT: { enabled: true },
-    ENAUSDT:  { enabled: true },
-    HYPEUSDT: { enabled: true },
-    // Commodities — precious metals
-    "NCCOGOLD2USD-USDT":         { enabled: true },
-    "NCCOXAG2USD-USDT":          { enabled: true },
-    "NCCOXPT2USD-USDT":          { enabled: true },
-    // Commodities — energy
-    "NCCO7241OILBRENT2USD-USDT": { enabled: true },
-    "NCCO7241OILWTI2USD-USDT":   { enabled: true },
-    "NCCO7241NATGAS2USD-USDT":   { enabled: true },
-    "NCCOGASOLINE2USD-USDT":     { enabled: true },
-    // Commodities — agriculture
-    "NCCOSOYBEANS2USD-USDT":     { enabled: true },
-    "NCCOWHEAT2USD-USDT":        { enabled: true },
-    "NCCOCOCOA2USD-USDT":        { enabled: true },
-    // Commodities — metals
-    "NCCOCOPPER2USD-USDT":       { enabled: true },
-    "NCCOALUMINIUM2USD-USDT":    { enabled: true },
-    // Forex
-    "NCFXEUR2USD-USDT":          { enabled: true },
-    // Stocks
-    "NCSKTSLA2USD-USDT":         { enabled: true },
-    "NCSKNVDA2USD-USDT":         { enabled: true },
-    "NCSKGOOGL2USD-USDT":        { enabled: true },
-    "NCSKAMZN2USD-USDT":         { enabled: true },
-    "NCSKMSFT2USD-USDT":         { enabled: true },
+    // ── ATIVOS (8) ────────────────────────────────────────────
+    BTCUSDT:                      { enabled: true,  tier: "primary"    },
+    ETHUSDT:                      { enabled: true,  tier: "primary"    },
+    SOLUSDT:                      { enabled: true,  tier: "primary"    },
+    BNBUSDT:                      { enabled: true,  tier: "primary"    },
+    XRPUSDT:                      { enabled: true,  tier: "primary"    },
+    "NCCOGOLD2USD-USDT":          { enabled: true,  tier: "commodity"  }, // hedge macro
+    "NCCOXAG2USD-USDT":           { enabled: true,  tier: "commodity"  },
+    "NCCO7241OILWTI2USD-USDT":    { enabled: true,  tier: "commodity"  },
+    // ── DESABILITADOS (aguardando crescimento de capital) ────
+    ADAUSDT:                      { enabled: false, tier: "secondary" },
+    LINKUSDT:                     { enabled: false, tier: "secondary" },
+    NEARUSDT:                     { enabled: false, tier: "secondary" },
+    UNIUSDT:                      { enabled: false, tier: "secondary" },
+    AAVEUSDT:                     { enabled: false, tier: "secondary" },
+    TRXUSDT:                      { enabled: false, tier: "secondary" },
+    SUIUSDT:                      { enabled: false, tier: "secondary" },
+    ONDOUSDT:                     { enabled: false, tier: "secondary" },
+    ENAUSDT:                      { enabled: false, tier: "secondary" },
+    HYPEUSDT:                     { enabled: false, tier: "secondary" },
+    "NCCOXPT2USD-USDT":           { enabled: false, tier: "commodity"  },
+    "NCCO7241OILBRENT2USD-USDT":  { enabled: false, tier: "commodity"  },
+    "NCCO7241NATGAS2USD-USDT":    { enabled: false, tier: "commodity"  },
+    "NCCOGASOLINE2USD-USDT":      { enabled: false, tier: "commodity"  },
+    "NCCOSOYBEANS2USD-USDT":      { enabled: false, tier: "commodity"  },
+    "NCCOWHEAT2USD-USDT":         { enabled: false, tier: "commodity"  },
+    "NCCOCOCOA2USD-USDT":         { enabled: false, tier: "commodity"  },
+    "NCCOCOPPER2USD-USDT":        { enabled: false, tier: "commodity"  },
+    "NCCOALUMINIUM2USD-USDT":     { enabled: false, tier: "commodity"  },
+    "NCFXEUR2USD-USDT":           { enabled: false, tier: "fx"         },
+    "NCSKTSLA2USD-USDT":          { enabled: false, tier: "stock"      },
+    "NCSKNVDA2USD-USDT":          { enabled: false, tier: "stock"      },
+    "NCSKGOOGL2USD-USDT":         { enabled: false, tier: "stock"      },
+    "NCSKAMZN2USD-USDT":          { enabled: false, tier: "stock"      },
+    "NCSKMSFT2USD-USDT":          { enabled: false, tier: "stock"      },
   },
 
   // ── Per-Symbol SL Distance (15-min Day Trading) ───────────────
-  // If a symbol is not listed here, STRATEGY.SL_PCT (0.5%) is used.
+  // SL apertado = fewer, bigger winners. ATR-calibrated por ativo.
+  // Se símbolo não listado, STRATEGY.SL_PCT (0.5%) é usado como fallback.
   SYMBOL_SL_PCT: {
-    // Crypto — Tier 1
+    // Crypto — Tier 1 (apertados — liquidez permite stops precisos)
     BTCUSDT:  0.005, // 0.5%
     ETHUSDT:  0.006, // 0.6%
     SOLUSDT:  0.008, // 0.8%
@@ -106,70 +118,51 @@ export const STRATEGY = {
     ENAUSDT:  0.010,
     HYPEUSDT: 0.012,
     // Commodities — precious metals
-    "NCCOGOLD2USD-USDT":         0.008, // Gold: moderate ATR
-    "NCCOXAG2USD-USDT":          0.010, // Silver: more volatile than gold
-    "NCCOXPT2USD-USDT":          0.010, // Platinum: similar to silver
+    "NCCOGOLD2USD-USDT":         0.008, // Gold: ATR moderado
+    "NCCOXAG2USD-USDT":          0.010, // Silver: mais volátil que gold
+    "NCCOXPT2USD-USDT":          0.010,
     // Commodities — energy (wider — news & inventory spikes)
-    "NCCO7241OILBRENT2USD-USDT": 0.012, // Oil Brent
-    "NCCO7241OILWTI2USD-USDT":   0.012, // Oil WTI
-    "NCCO7241NATGAS2USD-USDT":   0.015, // Natural Gas: extreme intraday swings
-    "NCCOGASOLINE2USD-USDT":     0.012, // Gasoline
-    // Commodities — agriculture (weather + USDA reports = gap risk)
+    "NCCO7241OILBRENT2USD-USDT": 0.012,
+    "NCCO7241OILWTI2USD-USDT":   0.012,
+    "NCCO7241NATGAS2USD-USDT":   0.015, // Natural Gas: swings extremos
+    "NCCOGASOLINE2USD-USDT":     0.012,
+    // Commodities — agriculture
     "NCCOSOYBEANS2USD-USDT":     0.012,
     "NCCOWHEAT2USD-USDT":        0.012,
-    "NCCOCOCOA2USD-USDT":        0.015, // Cocoa: thinner book
+    "NCCOCOCOA2USD-USDT":        0.015,
     // Commodities — metals
     "NCCOCOPPER2USD-USDT":       0.010,
     "NCCOALUMINIUM2USD-USDT":    0.010,
-    // Forex — tight spreads but leverage amplifies moves
-    "NCFXEUR2USD-USDT":          0.005, // EUR/USD: very liquid, tight ATR
-    // Stocks — session-gapped, wider SL needed
-    "NCSKTSLA2USD-USDT":         0.015, // Tesla: high beta
-    "NCSKNVDA2USD-USDT":         0.012, // NVIDIA
-    "NCSKGOOGL2USD-USDT":        0.010, // Google
-    "NCSKAMZN2USD-USDT":         0.010, // Amazon
-    "NCSKMSFT2USD-USDT":         0.008, // Microsoft: lower beta
+    // Forex
+    "NCFXEUR2USD-USDT":          0.005,
+    // Stocks
+    "NCSKTSLA2USD-USDT":         0.015,
+    "NCSKNVDA2USD-USDT":         0.012,
+    "NCSKGOOGL2USD-USDT":        0.010,
+    "NCSKAMZN2USD-USDT":         0.010,
+    "NCSKMSFT2USD-USDT":         0.008,
   },
 
   // ── Per-Symbol Leverage Caps ───────────────────────────────────
+  // Rule: high leverage OK apenas em Tier 1 onde stop pode ser justo.
+  // Com SL de 0.5% a 30x, loss per trade ainda cai via position sizing.
   SYMBOL_MAX_LEVERAGE: {
-    // Crypto — Tier 1
-    BTCUSDT:  30,
-    ETHUSDT:  10,
-    SOLUSDT:  20,
-    BNBUSDT:  20,
-    XRPUSDT:  20,
-    // Crypto — Tier 2
-    ADAUSDT:  15,
-    LINKUSDT: 15,
-    NEARUSDT: 10,
-    UNIUSDT:  10,
-    AAVEUSDT: 10,
-    // Crypto — Tier 3
-    TRXUSDT:  15,
-    SUIUSDT:  10,
-    ONDOUSDT:  5,
-    ENAUSDT:  10,
-    HYPEUSDT: 10,
-    // Commodities — precious metals
+    BTCUSDT:  30, ETHUSDT: 10, SOLUSDT: 20, BNBUSDT: 20, XRPUSDT: 20,
+    ADAUSDT:  15, LINKUSDT: 15, NEARUSDT: 10, UNIUSDT: 10, AAVEUSDT: 10,
+    TRXUSDT:  15, SUIUSDT: 10, ONDOUSDT:  5, ENAUSDT: 10, HYPEUSDT: 10,
     "NCCOGOLD2USD-USDT":         10,
     "NCCOXAG2USD-USDT":          10,
     "NCCOXPT2USD-USDT":           5,
-    // Commodities — energy
     "NCCO7241OILBRENT2USD-USDT":  5,
     "NCCO7241OILWTI2USD-USDT":    5,
-    "NCCO7241NATGAS2USD-USDT":    3, // Natural gas: extreme volatility
+    "NCCO7241NATGAS2USD-USDT":    3,
     "NCCOGASOLINE2USD-USDT":      5,
-    // Commodities — agriculture
     "NCCOSOYBEANS2USD-USDT":      5,
     "NCCOWHEAT2USD-USDT":         5,
     "NCCOCOCOA2USD-USDT":         3,
-    // Commodities — metals
     "NCCOCOPPER2USD-USDT":        5,
     "NCCOALUMINIUM2USD-USDT":     5,
-    // Forex
-    "NCFXEUR2USD-USDT":          20, // EUR/USD: very liquid
-    // Stocks
+    "NCFXEUR2USD-USDT":          20,
     "NCSKTSLA2USD-USDT":          5,
     "NCSKNVDA2USD-USDT":          5,
     "NCSKGOOGL2USD-USDT":         5,
@@ -178,274 +171,256 @@ export const STRATEGY = {
   },
 
   // ── Signal Expiry ──────────────────────────────────────────────
-  // On 15-min timeframe signals go stale quickly — expire after 30 min.
-  //
-  // Conditions that expire a signal:
-  //   1. Age > MAX_AGE_HOURS  (market conditions changed)
-  //   2. Price already crossed SL  (entering would be an instant loss)
-  //   3. Price moved ENTRY_MISS_PCT past entry[0]  (LIMIT orders can't fill;
-  //      opportunity has passed — a new scan will generate a fresh signal)
+  // No 15-min, sinais ficam stale rapidamente.
   SIGNAL_EXPIRY: {
-    MAX_AGE_HOURS:  0.5,  // 30 min — 15min signals go stale fast
-    ENTRY_MISS_PCT: 0.01, // 1% past first entry → stale on 15min
+    MAX_AGE_HOURS:  0.5,  // 30 min
+    ENTRY_MISS_PCT: 0.01, // 1% além do entry[0]
   },
 
-  // ── Scale-In Entries ───────────────────────────────────────────
-  // Each entry has its own individual SL (1% capital risk per entry).
-  //
-  // Example (SHORT, 3 entries, 0.3% spacing, BTC @ $80,000):
-  //   Entry 1: $80,000  MARKET → SL at $80,400 (0.5% above = 1% risk)
-  //   Entry 2: $80,240  LIMIT  → SL at $80,641
-  //   Entry 3: $80,480  LIMIT  → SL at $80,882
-  //
-  // ⚠ RISK NOTE: with 3 entries all filled, max loss = 3 × 1% = 3%
-  //   if all stops hit simultaneously (e.g. gap on news).
-  //   The daily 1% loss limit will halt trading after the first stop out.
+  // ── Scale-In ───────────────────────────────────────────────────
+  // Desabilitado (single entry) — economiza 2/3 das fees de abertura
+  // e elimina complexidade na gestão de múltiplos SLs.
   SCALE_IN: {
-    ENABLED:     false,  // single entry — eliminates 2/3 of opening fees
+    ENABLED:     false,
     ENTRIES:     1,
     SPACING_PCT: 0.003,
   },
 
-  // ── Daily / Monthly Risk & Profit Limits ─────────────────────
-  // Bot pauses trading for the rest of the day once realized losses
-  // exceed DAILY_RISK_PCT × capital OR profit target is reached.
-  DAILY_RISK_PCT:   0.01,   // 1% of capital — max loss per day
-  MONTHLY_RISK_PCT: 0.30,   // 30% of capital — informational limit
+  // ═══════════════════════════════════════════════════════════════
+  //  ⚡ CONTROLE DE RISCO RIGOROSO (v2 — trader institucional)
+  // ═══════════════════════════════════════════════════════════════
 
-  // Daily profit target — bot stops opening new trades when reached.
-  // ⚠ MATH NOTE: $100/day on $128 capital = 78% daily ROI.
-  //   With 1% risk per entry ($1.28), each trade at 2R makes ~$2.56.
-  //   You would need 40 consecutive winning trades per day to hit $100.
-  //   Suggested realistic target: $5-10/day (4-8%) until capital grows.
-  DAILY_PROFIT_TARGET: 0,   // 0 = sem parada por lucro — opera o dia inteiro buscando o máximo
-  DAILY_PROFIT_REFERENCE: 100, // meta de referência ($100/dia) — exibida no dashboard, não bloqueia trades
+  // ── Daily Loss Limit ──────────────────────────────────────────
+  // ⚠ REDUZIDO de 1.0% para 0.5% — controle mais rigoroso.
+  //   Em $128 de capital = $0.64/dia máximo de perda.
+  //   Em $200                 = $1.00/dia máximo de perda.
+  //   Bot pausa trades até o próximo dia UTC quando atingido.
+  DAILY_RISK_PCT:   0.005,  // 0.5%
+  MONTHLY_RISK_PCT: 0.15,   // 15% — informacional, circuit breaker mensal
 
-  // ── Risk ─────────────────────────────────────────────────────
-  SL_PCT: 0.005, // 0.5% default SL distance on 15min timeframe
+  // ── Monthly Profit Floor ──────────────────────────────────────
+  // Meta MÍNIMA mensal: $100. Bot NÃO PARA quando atinge.
+  // Serve para:
+  //   - Exibir progresso no dashboard (barra + anel)
+  //   - Alertar quando ficando atrás do pace esperado
+  //   - Histórico: meses que cumpriram vs não cumpriram
+  MONTHLY_PROFIT_FLOOR: 100,
 
-  // Minimum confidence score (0–100) for any setup to generate a signal
-  MIN_SCORE: 75,
+  // ── Daily Profit Reference ────────────────────────────────────
+  // $100/30 dias úteis ≈ $3.33/dia para cumprir o piso mensal.
+  // Usado no dashboard para calcular 'pace' (em linha vs atrás).
+  DAILY_PROFIT_TARGET:    0,   // 0 = sem parada automática por lucro
+  DAILY_PROFIT_REFERENCE: 3.33, // pace diário para cumprir $100/mês
 
-  // Capital reserve — always keep this fraction of total capital free.
-  // Ensures the account is never fully deployed; new opportunities can
-  // always be taken regardless of how many positions are currently open.
-  // Example: $128 capital × 0.20 = $25.60 minimum always available.
-  MIN_FREE_CAPITAL_PCT: 0.10,
-
-  // Capital allocated per trade slot (as fraction of total capital).
-  // This limits position value per individual entry — not trade count.
-  CAPITAL_ALLOCATION_PCT: 0.10,
-
-  // ── Fibonacci Take-Profit Levels (in R multiples) ──────────────
-  // Fib extensions: 1.618R, 2.618R, 4.236R from entry → SL distance.
-  // On 15min with 0.5% SL:
-  //   TP1 @ 1.618R = +0.81% from entry
-  //   TP2 @ 2.618R = +1.31% from entry
-  //   TP3 @ 4.236R = +2.12% from entry
-  FIB_LEVELS: {
-    TP1: 1.618, // close 40% at 1.618R (Fib extension)
-    TP2: 2.618, // close 35% at 2.618R
-    TP3: 4.236, // close 25% at 4.236R
+  // ── Break-Even após TP1 (Trade-Runner Mode) ───────────────────
+  // Ao atingir TP1 (fechando primeiro lote), move SL para entry + buffer.
+  // Trade restante fica "grátis" — capital protegido, upside preservado.
+  // Esse mecanismo é o que permite deixar winners correrem até TP3.
+  BREAK_EVEN: {
+    ENABLED:           true,
+    BUFFER_PCT:        0.0005, // 0.05% além do entry (cobre fees ~0.04% round-trip)
+    TRAIL_AFTER_TP2:   true,   // Após TP2, move SL para meio caminho entry→TP2
   },
 
-  // % of position to close at each TP level (must sum to 1.0)
+  // ── Risk — Default SL (fallback quando não há override por símbolo) ──
+  SL_PCT: 0.005,
+
+  // ── Minimum Confidence Score ──────────────────────────────────
+  // ⚠ AUMENTADO de 75 para 78 — mais seletivo.
+  //   Menos trades, mais qualidade = melhor sharpe.
+  MIN_SCORE: 78,
+
+  // ── Capital Reserve ────────────────────────────────────────────
+  // Sempre manter esta % do capital total livre.
+  // Garante que uma oportunidade nunca é perdida por capital esgotado.
+  MIN_FREE_CAPITAL_PCT: 0.20,
+
+  // ── Per-Trade Allocation ───────────────────────────────────────
+  // Capital alocado por slot de trade. Limita valor da posição (não count).
+  // 20% × $128 = $25.60 por trade.
+  CAPITAL_ALLOCATION_PCT: 0.20,
+
+  // ═══════════════════════════════════════════════════════════════
+  //  🎯 TAKE-PROFIT PROFESSIONAL DISTRIBUTION
+  // ═══════════════════════════════════════════════════════════════
+
+  // ── Fibonacci Take-Profit Levels (em R multiples) ─────────────
+  // TP1 @ 1.5R garante que APÓS fees (~0.08%), o trade tem R:R ≥ 1.4.
+  // Sobre avg entry com SL 0.5%:
+  //   TP1 @ 1.5R  = +0.75% (lucro rápido; fecha 50%)
+  //   TP2 @ 2.618R = +1.31% (meio do trade; fecha 30%)
+  //   TP3 @ 4.236R = +2.12% (runner; 20% final)
+  FIB_LEVELS: {
+    TP1: 1.5,   // Reduzido de 1.618 para 1.5 — garante saída rápida
+    TP2: 2.618,
+    TP3: 4.236,
+  },
+
+  // ── TP Distribution (redistribuído para "garantir o lucro cedo") ──
+  // Antes: 40 / 35 / 25. Agora: 50 / 30 / 20.
+  // Racional: fechar 50% no TP1 + BE stop no restante = impossível
+  // terminar o trade negativo (exceto gap > 0.05%). Combinação essencial
+  // para cumprir piso mensal com win rate moderado (~45-55%).
   TP_DISTRIBUTION: {
-    TP1: 0.40,
-    TP2: 0.35,
-    TP3: 0.25,
+    TP1: 0.50,  // 50% fechado → trava o lucro
+    TP2: 0.30,  // 30% fechado → reforça
+    TP3: 0.20,  // 20% runner  → bonus
   },
 
   // ── Technical Analysis Thresholds ─────────────────────────────
   RSI: {
-    OVERBOUGHT: 70,
-    OVERSOLD: 30,
+    OVERBOUGHT:   70,
+    OVERSOLD:     30,
     NEUTRAL_HIGH: 60,
-    NEUTRAL_LOW: 40,
+    NEUTRAL_LOW:  40,
   },
 
   ORDERBOOK: {
     BULL_IMBALANCE: 0.55,
     BEAR_IMBALANCE: 0.45,
-    DEPTH_LEVELS: 20,
+    DEPTH_LEVELS:   20,
   },
 
   FUNDING: {
-    BEARISH_THRESHOLD: 0.0001,   // > +0.01% = bearish
-    BULLISH_THRESHOLD: -0.0001,  // < -0.01% = bullish
+    BEARISH_THRESHOLD:  0.0001,
+    BULLISH_THRESHOLD: -0.0001,
   },
 
   FEAR_GREED: {
-    EXTREME_FEAR_MAX: 25,
-    FEAR_MAX: 45,
-    GREED_MIN: 55,
-    EXTREME_GREED_MIN: 75,
+    EXTREME_FEAR_MAX:   25,
+    FEAR_MAX:           45,
+    GREED_MIN:          55,
+    EXTREME_GREED_MIN:  75,
   },
 
   // ── Timeframes ─────────────────────────────────────────────────
-  // Switched to 15-min for day trading / scalping.
-  // ENTRY_ANALYSIS = timeframe for EMA, RSI, MACD, OHLCV bars.
-  // TREND_FILTER   = higher timeframe for trend confirmation.
-  //                  Set equal to ENTRY_ANALYSIS to use only one TF.
   TIMEFRAMES: {
-    ENTRY_ANALYSIS: "15",  // 15-minute bars for all indicators
-    TREND_FILTER:   "60",  // 1-hour bars for trend direction filter
+    ENTRY_ANALYSIS: "15",  // 15-minute bars
+    TREND_FILTER:   "60",  // 1-hour bars para trend direction
   },
 
-  // ── Legacy Scoring Weights (kept for reference) ─────────────────
-  // Not used by the new setup-based engine — see SETUPS below.
+  // ── Legacy Scoring Weights (kept for reference) ────────────────
   SCORING_WEIGHTS: {
-    EMA200_DAILY: 15,
-    EMA21_WEEKLY: 10,
-    MACD_WEEKLY: 10,
-    RSI_WEEKLY: 5,
-    FUNDING_RATE: 15,
-    ORDERBOOK: 10,
+    EMA200_DAILY:     15,
+    EMA21_WEEKLY:     10,
+    MACD_WEEKLY:      10,
+    RSI_WEEKLY:        5,
+    FUNDING_RATE:     15,
+    ORDERBOOK:        10,
     LONG_SHORT_RATIO: 10,
-    FEAR_GREED: 10,
-    MACRO_CONTEXT: 15,
+    FEAR_GREED:       10,
+    MACRO_CONTEXT:    15,
   },
 };
 
-// ── Named Trading Setups ───────────────────────────────────────────
-// Each setup has its own trigger logic, leverage, and SL distance.
-// The signal engine evaluates all setups independently and returns
-// a rationale[] array explaining exactly why each trade was entered.
+// ═══════════════════════════════════════════════════════════════════
+//  🎯 Named Trading Setups
+// ═══════════════════════════════════════════════════════════════════
+// Cada setup tem lógica de trigger, leverage e SL próprios.
+// A engine avalia todos em paralelo e escolhe o de maior confiança.
 //
-// filterOnly: true  → used as confirmation filter for other setups
-//                     (can also generate standalone signals if strong enough)
-// symbols: string[] → restrict to specific symbols (BTC-only for setups 2 & 5)
+// filterOnly: true  → usado como confirmação para outros setups
+// symbols: string[] → restringe a ativos específicos (ex: BTC-only)
+//
+// ⚠ Todos os tp_r.tp1 DEVEM ser ≥ 1.5R para cumprir a regra:
+//   "nunca entrar em trade onde TP1 < 1.5R (após fees)"
 
 export const SETUPS = {
 
-  // ── Setup 1 ─ EMA Pullback Continuation (15min + 1H) ─────────────
-  // The single highest-probability day trading setup in trending markets.
+  // ── Setup 1 ─ EMA Pullback Continuation (15min + 1H) ──────────
+  // O setup de maior probabilidade em mercados em tendência.
   //
   // Logic:
-  //   1. 1H EMA stack check: EMA9 > EMA21 > EMA50 (bullish) or inverse
-  //   2. 15min: price pulls back to the EMA21 (within ema_touch_pct)
-  //   3. 15min: reversal candle confirms the rejection
-  //   4. 1H RSI not in extreme zone (>75 or <25) — guards against fade
-  //   5. Weekly bias (RSI/MACD/StochRSI) as direction bonus/penalty
+  //   1. 1H EMA stack: EMA9 > EMA21 > EMA50 (bull) ou inverse (bear)
+  //   2. 15min: preço no pullback ao EMA21 (dentro de ema_touch_pct)
+  //   3. 15min: reversal candle confirma rejeição
+  //   4. 1H RSI fora de extremos (>75 ou <25) — evita fade
+  //   5. Weekly bias (RSI/MACD/StochRSI) como bônus/penalidade
   //
-  // Why it works: In trending markets, price always returns to the EMA21
-  // before continuing the trend. This is where institutional orders sit.
-  // The EMA stack on 1H acts as a trend quality filter — if the 3 EMAs
-  // are misaligned, the trend is choppy and this setup stays silent.
+  // Why it works: em mercados em tendência, preço sempre volta ao EMA21
+  // antes de continuar. É onde institucionais posicionam ordens.
   EMA_PULLBACK: {
     id: "EMA_PULLBACK",
     name: "Setup 1 — EMA Pullback na Tendência (15min + 1H)",
     description:
       "EMA9/21/50 stack no 1H define tendência; toque no EMA21 no 15min + vela de reversão = entrada",
-    leverage: 3,       // reduced from 5x — limits max loss per trade
-    sl_pct: 0.005,     // uses SYMBOL_SL_PCT override per asset
-    tp_r: { tp1: 1.618, tp2: 2.618, tp3: 4.236 }, // Fibonacci R multiples
+    leverage: 3,       // reduzido de 5x — limita max loss
+    sl_pct: 0.005,     // usa SYMBOL_SL_PCT override por ativo
+    tp_r: { tp1: 1.5, tp2: 2.618, tp3: 4.236 },
     enabled: true,
-    symbols: null,     // null = all symbols
-    ema_touch_pct: 0.008, // 0.8% from EMA21 counts as "touching zone"
+    symbols: null,
+    ema_touch_pct: 0.008,
   },
 
-  // ── Setup 2 ─ STH Realized Price SHORT (Isolated Rule) ──────────
-  // When BTC price approaches the Short-Term Holder Realized Price
-  // (yellow line on bitcoinmagazinepro.com), open a SHORT.
+  // ── Setup 2 ─ STH Realized Price SHORT (Isolated) ─────────────
+  // Setup ISOLADO — ignora tendência geral, apenas BTC, apenas SHORT.
   //
-  // This is an ISOLATED setup — it ignores the general trend, score
-  // minimum, and leverage caps. It fires ONLY as SHORT on BTCUSDT.
-  //
-  // ⚠ RISK: 20x leverage + 10% SL. If price rises 10% from entry,
-  //   the stop triggers. With 10% SL at 20x: loss = 10% × 20 = 200%
-  //   of margin → always size using the 1% capital risk rule so the
-  //   DOLLAR loss = 1% × capital, regardless of the leverage used.
-  //
-  // Trigger sequence (monitored every 2 min by scanner):
-  //   1. STH Realized Price is fetched from CoinGlass / rules.json
-  //   2. Current BTC price is compared to STH line
-  //   3. If proximity ≤ touch_pct (3%) AND is CONVERGING (getting
-  //      closer since the last few scans) → setup fires as SHORT
-  //   4. No reversal candle required (10% SL gives more room)
+  // ⚠ Risk: 20x leverage + 10% SL. Sizing usa regra de 0.5% capital risk,
+  //   então dollar loss = 0.5% × capital independente da alavancagem.
   STH_REALIZED_PRICE: {
     id: "STH_REALIZED_PRICE",
     name: "Setup 2 — STH Realized Price SHORT",
     description:
       "BTC aproximando da STH Realized Price (linha amarela bitcoinmagazinepro.com) → SHORT 20x, SL 10%",
     leverage: 20,
-    sl_pct: 0.10,      // 10% — price must rise 10% above entry for BTC to be stopped
+    sl_pct: 0.10,
     tp_r: { tp1: 1.5, tp2: 2.5, tp3: 4.0 },
     enabled: true,
     symbols: ["BTCUSDT"],
-    direction: "SHORT", // always SHORT — never LONG from this setup
-    // Proximity thresholds:
-    touch_pct: 0.03,           // 3% — start alerting when price within 3% of STH line
-    converge_threshold_pct: 2, // if proximity dropped ≥2pp since last check → converging
+    direction: "SHORT",
+    touch_pct: 0.03,
+    converge_threshold_pct: 2,
   },
 
-  // ── Setup 3 ─ S/R Breakout + Retest (1H levels + 15min entry) ───────
-  // Identifies horizontal support/resistance from 1H swing highs/lows.
-  // Waits for a clean 15min breakout THROUGH the level (3+ bar closes),
-  // then enters when price returns to retest the broken level.
+  // ── Setup 3 ─ S/R Breakout + Retest (1H levels + 15min entry) ──
+  // Identifica S/R horizontal do 1H, aguarda breakout + retest no 15min.
   //
-  // Logic:
-  //   1. Find key S/R from 1H swing highs/lows (last 50 bars)
-  //   2. Confirm 15min breakout: 6+ of last 10 bar closes on the new side
-  //   3. Retest: price returns within retest_tolerance_pct of the level
-  //   4. Reversal candle at the retest confirms institutional buying/selling
-  //   5. EMA200 and weekly bias as bonus/penalty
-  //
-  // Why it works: when resistance becomes support (or vice versa), the
-  // "level flip" is where trapped traders are squeezed and new positions
-  // are added by institutions. This is the highest-volume entry zone.
-  //
-  // Note: RSI/StochRSI/MACD are NOT used as entry triggers here.
-  // They are ONLY used as weekly direction bias via _computeWeeklyBias().
+  // Why it works: "level flip" é onde traders presos são squeezed e
+  // institucionais adicionam novas posições. Maior volume de entrada.
   SR_BREAKOUT_RETEST: {
     id: "SR_BREAKOUT_RETEST",
     name: "Setup 3 — Rompimento + Reteste de S/R (1H + 15min)",
     description:
       "Nível-chave do 1H rompido com fechamento + reteste no 15min = entrada na virada de S/R",
-    leverage: 3,       // reduced from 4x — consistent with EMA Pullback
+    leverage: 3,
     sl_pct: 0.007,
     tp_r: { tp1: 1.618, tp2: 2.618, tp3: 4.236 },
     enabled: true,
     symbols: null,
-    retest_tolerance_pct: 0.015, // 1.5% — price must return within 1.5% of broken level
-    min_touches: 2,              // minimum number of swing points defining the S/R zone
+    retest_tolerance_pct: 0.015,
+    min_touches: 2,
   },
 
-  // ── Setup 4 ─ Open Interest Confirmation Filter ───────────────────
-  // OI increasing = current trend strengthens (confirms entry).
-  // OI decreasing = trend weakening (filters out or reduces confidence).
-  // This is primarily a filter applied to other setups; when combined
-  // with a clear price trend it can also trigger a standalone signal.
+  // ── Setup 4 ─ Open Interest Confirmation Filter ───────────────
+  // OI subindo = trend fortalece (confirma). OI caindo = enfraquece.
+  // Primariamente filtro para outros setups; pode gerar sinal standalone.
   OI_CONFIRMATION: {
     id: "OI_CONFIRMATION",
     name: "Setup 4 — Open Interest como Filtro",
     description:
       "OI subindo = tendência fortalece (confirma setup); OI caindo = tendência enfraquece (cancela setup)",
     leverage: 3,
-    sl_pct: 0.015,
-    tp_r: { tp1: 2.0, tp2: 4.0, tp3: 6.0 },
+    sl_pct: 0.012,     // reduzido de 0.015 — controle mais rigoroso
+    tp_r: { tp1: 1.8, tp2: 3.5, tp3: 5.5 },
     enabled: true,
     symbols: ["BTCUSDT", "ETHUSDT"],
-    filterOnly: true,       // primarily a filter; affects confidence of other setups
-    oi_change_threshold: 3, // % change in 24h to count as meaningful
+    filterOnly: true,
+    oi_change_threshold: 3,
   },
 
-  // ── Setup 5 ─ Liquidation Zone Accumulation (24h) ────────────────
-  // BTC/USDT Binance perpetuals liquidation map.
-  // When a large cluster of liquidations accumulates in one zone AFTER
-  // the opposite zone was cleared → market tends to push toward the
-  // accumulated cluster to trigger cascade liquidations.
+  // ── Setup 5 ─ Liquidation Zone Accumulation (24h) ─────────────
+  // Quando cluster grande de liquidações se acumula em uma zona,
+  // mercado tende a empurrar para triggerar cascata.
   LIQUIDATION_ZONE: {
     id: "LIQUIDATION_ZONE",
     name: "Setup 5 — Mapa de Liquidações BTC (24h)",
     description:
       "Acúmulo alto em zona após limpar liquidações opostas → sinal de liquidação em cascata",
     leverage: 5,
-    sl_pct: 0.02,
-    tp_r: { tp1: 2.0, tp2: 3.5, tp3: 5.5 },
+    sl_pct: 0.015,     // reduzido de 0.02 — controle mais rigoroso
+    tp_r: { tp1: 1.8, tp2: 3.0, tp3: 5.0 },
     enabled: true,
     symbols: ["BTCUSDT"],
-    // Trigger: one side must have >65% of nearby liquidations
     zone_dominance_threshold: 0.65,
   },
 };

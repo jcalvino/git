@@ -1,109 +1,165 @@
 // ─────────────────────────────────────────────────────────────────
-//  Risk Manager
-//  Validates trades against risk rules before execution.
+//  Risk Manager — Professional Edition (v2)
+//
+//  Novo nesta versão:
+//   • Break-even após TP1 (trade-runner mode)
+//   • Daily risk limit mais rigoroso (0.5%)
+//   • Monthly profit floor tracking ($100)
+//   • Monthly/weekly P&L helpers para analytics
 // ─────────────────────────────────────────────────────────────────
 
 import config from "../config/index.js";
 import { STRATEGY } from "../config/strategy.js";
 
-/**
- * Check if a new trade is allowed given current risk state.
- *
- * @param {object} params
- * @param {object[]} openPositions   — current open positions from BingX
- * @param {number}   score           — signal score (0–100)
- * @param {object}   macroAnalysis   — from analyzeMacro()
- * @param {number}   [availableMargin] — free margin in account (USDT)
- * @param {number}   [totalCapital]    — total equity in account (USDT)
- * @returns {{ allowed: boolean, reasons: string[] }}
- */
-export function checkRiskRules({ openPositions, score, macroAnalysis, availableMargin = null, totalCapital = null }) {
-  const reasons = [];
-  let allowed = true;
+// ═══════════════════════════════════════════════════════════════════
+//  PRE-TRADE RISK RULES
+// ═══════════════════════════════════════════════════════════════════
 
-  // 1. Capital reserve guard — keep MIN_FREE_CAPITAL_PCT always available.
-  //    No hard cap on position count; the constraint is capital, not slots.
+export function checkRiskRules({
+  openPositions,
+  score,
+  macroAnalysis,
+  availableMargin = null,
+  totalCapital    = null,
+  dailyPnl        = 0,
+}) {
+  const reasons  = [];
+  const warnings = [];
+  let allowed    = true;
+
+  // DAILY LOSS CIRCUIT BREAKER (0.5%)
+  if (totalCapital !== null && totalCapital > 0) {
+    const limitPct     = STRATEGY.DAILY_RISK_PCT ?? 0.005;
+    const limitDollars = -(totalCapital * limitPct);
+    if (dailyPnl <= limitDollars) {
+      allowed = false;
+      reasons.push(
+        `DAILY LOSS LIMIT atingido: $${dailyPnl.toFixed(2)} <= $${limitDollars.toFixed(2)} ` +
+        `(${(limitPct * 100).toFixed(2)}% de $${totalCapital.toFixed(2)}). Bot pausado ate proximo dia UTC.`
+      );
+    } else if (dailyPnl < limitDollars * 0.6) {
+      warnings.push(
+        `Daily risk em ${((dailyPnl / limitDollars) * 100).toFixed(0)}% do limite ` +
+        `($${dailyPnl.toFixed(2)} / $${limitDollars.toFixed(2)})`
+      );
+    }
+  }
+
+  // CAPITAL RESERVE GUARD
   if (availableMargin !== null && totalCapital !== null && totalCapital > 0) {
     const freeCapitalPct = availableMargin / totalCapital;
     const minFree        = STRATEGY.MIN_FREE_CAPITAL_PCT ?? 0.20;
     if (freeCapitalPct < minFree) {
       allowed = false;
       reasons.push(
-        `Capital livre insuficiente: ${(freeCapitalPct * 100).toFixed(1)}% disponível ` +
-        `(mínimo ${(minFree * 100).toFixed(0)}%) — aguardando fechamento de posição`
+        `Capital livre insuficiente: ${(freeCapitalPct * 100).toFixed(1)}% ` +
+        `(minimo ${(minFree * 100).toFixed(0)}%) — aguardando fechamento de posicao`
       );
     }
   }
-  // Informational: log how many positions are open (no hard block)
+
   if (openPositions.length > 0) {
-    reasons.push(`INFO: ${openPositions.length} posição(ões) aberta(s) atualmente`);
+    warnings.push(`INFO: ${openPositions.length} posicao(oes) aberta(s)`);
   }
 
-  // 2. Minimum score
-  if (score < config.minScore) {
+  // MINIMUM SCORE
+  if (score < (config.minScore ?? STRATEGY.MIN_SCORE)) {
     allowed = false;
     reasons.push(
-      `Score ${score} below minimum ${config.minScore}`
+      `Score ${score} abaixo do minimo ${config.minScore ?? STRATEGY.MIN_SCORE}`
     );
   }
 
-  // 3. High-risk macro event — WARNING only, does not block user approval
-  //    The score already discounts -30% for high-risk events.
-  //    Clicking APPROVE in the dashboard is the user's informed override.
+  // MACRO EVENT WARNINGS
   if (macroAnalysis?.hasHighRisk) {
     const events = macroAnalysis.riskWarnings
       .filter((w) => w.severity === "high")
       .map((w) => w.type);
-    reasons.push(
-      `WARN: High-risk event active (${events.join(", ")}) — score already penalised`
+    warnings.push(
+      `Evento de alto risco ativo (${events.join(", ")}) — score ja penalizado`
     );
   }
 
-  // 4. Extreme fear — reduce size warning (not a blocker, but flag it)
   if (macroAnalysis?.fearGreed?.value <= 20) {
-    reasons.push(
-      `WARN: Extreme fear (${macroAnalysis.fearGreed.value}) — consider 50% position size reduction`
+    warnings.push(
+      `Medo extremo (${macroAnalysis.fearGreed.value}) — reduzir tamanho em 50%`
     );
   }
 
-  return { allowed, reasons };
+  return { allowed, reasons, warnings };
 }
 
-/**
- * Calculate scaled entry levels for a position.
- *
- * Splits the position into N LIMIT orders at progressively better prices:
- * - LONG:  entries go DOWN by spacing_pct each step (buy cheaper if price dips)
- * - SHORT: entries go UP by spacing_pct each step (sell higher if price rises)
- *
- * Each entry has its own individual SL at sl_pct from that entry price.
- * ⚠ Risk note: if all entries fill and all stops are hit simultaneously,
- *   total loss = N × 1% of capital (capped by daily limit in practice).
- *
- * The executor places a stop for ONLY the first (market) entry initially.
- * Monitor.js should update stops as limit entries fill.
- *
- * @param {object} params
- * @param {number} params.entry       — signal entry price (first scale level)
- * @param {string} params.direction   — "LONG" | "SHORT"
- * @param {number} params.slPct       — stop loss % per entry (e.g. 0.005 = 0.5%)
- * @param {number} params.entries     — number of scale levels
- * @param {number} params.spacingPct  — price step between levels (e.g. 0.003 = 0.3%)
- * @returns {{ levels, slPrices, avgEntry, lastEntry, slPrice }}
- */
+// ═══════════════════════════════════════════════════════════════════
+//  BREAK-EVEN LOGIC
+// ═══════════════════════════════════════════════════════════════════
+
+export function calculateBreakEvenPrice(entryPrice, direction, bufferPct = null) {
+  const buffer = bufferPct ?? STRATEGY.BREAK_EVEN?.BUFFER_PCT ?? 0.0005;
+  if (direction === "LONG") {
+    return parseFloat((entryPrice * (1 + buffer)).toFixed(8));
+  }
+  return parseFloat((entryPrice * (1 - buffer)).toFixed(8));
+}
+
+export function calculateTrailStopAfterTP2(entryPrice, tp2Price, direction) {
+  const midpoint = entryPrice + (tp2Price - entryPrice) * 0.5;
+  return parseFloat(midpoint.toFixed(8));
+}
+
+export function shouldMoveStopLoss(trade, position) {
+  if (!STRATEGY.BREAK_EVEN?.ENABLED) return null;
+  if (!trade || !position) return null;
+  if (trade.status === "CLOSED" || trade.status === "STOPPED") return null;
+
+  const direction = trade.direction;
+  const entry     = trade.entry_price;
+  const currentSl = trade.sl_price;
+
+  // TRAIL apos TP2
+  if (STRATEGY.BREAK_EVEN?.TRAIL_AFTER_TP2 && position.tp2_hit && trade.tp2_price) {
+    const trailSl  = calculateTrailStopAfterTP2(entry, trade.tp2_price, direction);
+    const isBetter = direction === "LONG" ? trailSl > currentSl : trailSl < currentSl;
+    if (isBetter) {
+      return {
+        newSl: trailSl,
+        reason: "Trail stop apos TP2: SL = 50% do caminho entry->TP2",
+        type: "TRAIL",
+      };
+    }
+  }
+
+  // BREAK-EVEN apos TP1
+  if (position.tp1_hit && !position.tp2_hit) {
+    const beSl     = calculateBreakEvenPrice(entry, direction);
+    const isBetter = direction === "LONG" ? beSl > currentSl : beSl < currentSl;
+    if (isBetter) {
+      return {
+        newSl: beSl,
+        reason: "Break-even apos TP1: trade protegido, runner gratis",
+        type: "BE",
+      };
+    }
+  }
+
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  SCALE-IN ENTRIES
+// ═══════════════════════════════════════════════════════════════════
+
 export function calcScaleEntries({ entry, direction, slPct, entries, spacingPct }) {
   const levels   = [];
   const slPrices = [];
 
   for (let i = 0; i < entries; i++) {
     const factor = direction === "LONG"
-      ? 1 - i * spacingPct   // lower prices = better avg entry for LONG
-      : 1 + i * spacingPct;  // higher prices = better avg entry for SHORT
+      ? 1 - i * spacingPct
+      : 1 + i * spacingPct;
 
     const entryPrice = parseFloat((entry * factor).toFixed(2));
     levels.push(entryPrice);
 
-    // Individual SL for this entry: sl_pct distance in adverse direction
     const sl = direction === "LONG"
       ? parseFloat((entryPrice * (1 - slPct)).toFixed(2))
       : parseFloat((entryPrice * (1 + slPct)).toFixed(2));
@@ -112,53 +168,43 @@ export function calcScaleEntries({ entry, direction, slPct, entries, spacingPct 
 
   const avgEntry  = levels.reduce((sum, p) => sum + p, 0) / levels.length;
   const lastEntry = levels[levels.length - 1];
-
-  // Signal-level SL = last (worst) entry's individual SL
-  // This is what the initial BingX stop order is set to.
-  const slPrice = slPrices[slPrices.length - 1];
+  const slPrice   = slPrices[slPrices.length - 1];
 
   return {
-    levels,     // array of limit prices [entry1, entry2, ...]
-    slPrices,   // array of individual SL prices (one per entry)
+    levels,
+    slPrices,
     avgEntry:   parseFloat(avgEntry.toFixed(2)),
     lastEntry,
-    slPrice,    // = slPrices[last] — used for the signal's single SL field
+    slPrice,
   };
 }
 
-/**
- * Calculate the actual trade size considering:
- * - Max risk per trade (1% of capital)
- * - Capital available
- * - 1x leverage (no leverage)
- *
- * For futures with 1x: position value = capital used
- * position size = (capital * riskPct) / (entry - sl)
- */
+// ═══════════════════════════════════════════════════════════════════
+//  POSITION SIZING
+// ═══════════════════════════════════════════════════════════════════
+
 export function calculateTradeSize(entryPrice, slPrice, capitalUsdt, macroAnalysis) {
   let effectiveCapital = capitalUsdt;
 
-  // In extreme fear, reduce position to 50% per risk rules
   if (macroAnalysis?.fearGreed?.value <= 20) {
     effectiveCapital = capitalUsdt * 0.5;
   }
 
-  const riskDollars = effectiveCapital * config.maxRiskPct;
-  const riskPerUnit = Math.abs(entryPrice - slPrice);
-  const positionSize = riskDollars / riskPerUnit;
+  const riskDollars   = effectiveCapital * config.maxRiskPct;
+  const riskPerUnit   = Math.abs(entryPrice - slPrice);
+  const positionSize  = riskDollars / riskPerUnit;
   const positionValue = positionSize * entryPrice;
 
-  // Safety cap: position value cannot exceed total capital (1x)
   const cappedSize =
     positionValue > effectiveCapital
       ? effectiveCapital / entryPrice
       : positionSize;
 
   return {
-    positionSize: parseFloat(cappedSize.toFixed(6)),
-    positionValue: parseFloat((cappedSize * entryPrice).toFixed(2)),
-    riskDollars: parseFloat(riskDollars.toFixed(2)),
+    positionSize:     parseFloat(cappedSize.toFixed(6)),
+    positionValue:    parseFloat((cappedSize * entryPrice).toFixed(2)),
+    riskDollars:      parseFloat(riskDollars.toFixed(2)),
     effectiveCapital: parseFloat(effectiveCapital.toFixed(2)),
-    wasCapped: positionValue > effectiveCapital,
+    wasCapped:        positionValue > effectiveCapital,
   };
 }

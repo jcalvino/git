@@ -19,6 +19,14 @@ import {
   closeExternalTrade,
   closeBotTradeFromSync,
   clearClosedTrades,
+  getMonthlyPnl,
+  getWeeklyPnl,
+  getDailyPnlSeries,
+  getMonthlyPnlSeries,
+  getStatsBySetup,
+  getStatsBySymbol,
+  getDrawdownSeries,
+  getCloseReasonBreakdown,
 } from "../storage/trades.js";
 import { executeSignal, closeTrade } from "../bot/executor.js";
 import { monitorOnce } from "../bot/monitor.js";
@@ -421,23 +429,95 @@ app.post("/api/errors/dismiss", (_req, res) => {
 
 // ── Daily Risk Status ──────────────────────────────────────────
 app.get("/api/risk/daily", (_req, res) => {
-  const pnl          = getDailyPnl();
-  const profit       = getDailyProfit();
-  const limited      = isDailyLimitReached(config.capitalUsdt);
-  const profitTarget    = STRATEGY.DAILY_PROFIT_TARGET ?? 0;       // hard stop (0 = off)
-  const profitReference = STRATEGY.DAILY_PROFIT_REFERENCE ?? 0;   // display-only goal
-  const targetHit       = isDailyTargetReached(profitTarget);      // always false when 0
+  const limitPct        = STRATEGY.DAILY_RISK_PCT ?? 0.005; // 0.5%
+  const pnl             = getDailyPnl();
+  const profit          = getDailyProfit();
+  const limited         = isDailyLimitReached(config.capitalUsdt, limitPct);
+  const profitTarget    = STRATEGY.DAILY_PROFIT_TARGET ?? 0;
+  const profitReference = STRATEGY.DAILY_PROFIT_REFERENCE ?? 0;
+  const targetHit       = isDailyTargetReached(profitTarget);
+  const limitAmount     = parseFloat((config.capitalUsdt * limitPct).toFixed(2));
+  const usagePct        = limitAmount > 0 ? Math.min(100, Math.abs(Math.min(0, pnl)) / limitAmount * 100) : 0;
   res.json({
     dailyPnl:        parseFloat(pnl.toFixed(2)),
     dailyProfit:     parseFloat(profit.toFixed(2)),
     capital:         config.capitalUsdt,
-    limitPct:        0.01,
-    limitAmount:     parseFloat((config.capitalUsdt * 0.01).toFixed(2)),
+    limitPct,
+    limitAmount,
+    usagePct:        parseFloat(usagePct.toFixed(1)),
     limited,
     profitTarget,
-    profitReference,  // $100 — shown in dashboard as the daily goal bar
+    profitReference,
     targetHit,
   });
+});
+
+// ── Monthly Goal Progress ──────────────────────────────────────
+// Retorna progresso do mês vs piso de $100.
+app.get("/api/stats/goal", (_req, res) => {
+  const floor   = STRATEGY.MONTHLY_PROFIT_FLOOR ?? 100;
+  const monthly = getMonthlyPnl();
+  const weekly  = getWeeklyPnl();
+
+  const now = new Date();
+  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const dayOfMonth  = now.getDate();
+  const expectedPace = (floor / daysInMonth) * dayOfMonth;
+  const paceStatus  = monthly.pnl >= expectedPace ? "ON_TRACK"
+                    : monthly.pnl >= expectedPace * 0.5 ? "BEHIND"
+                    : "AT_RISK";
+
+  res.json({
+    floor,
+    monthlyPnl:    monthly.pnl,
+    weeklyPnl:     weekly.pnl,
+    tradeCount:    monthly.tradeCount,
+    winCount:      monthly.winCount,
+    lossCount:     monthly.lossCount,
+    winRate:       monthly.winRate,
+    progressPct:   parseFloat(((monthly.pnl / floor) * 100).toFixed(1)),
+    reached:       monthly.pnl >= floor,
+    expectedPace:  parseFloat(expectedPace.toFixed(2)),
+    paceStatus,
+    daysInMonth,
+    dayOfMonth,
+    daysRemaining: daysInMonth - dayOfMonth,
+    firstDay:      monthly.firstDay,
+    lastDay:       monthly.lastDay,
+  });
+});
+
+// ── Daily P&L Series (barras do gráfico) ──────────────────────
+app.get("/api/stats/daily-series", (req, res) => {
+  const days = parseInt(req.query.days ?? "30");
+  res.json(getDailyPnlSeries(days));
+});
+
+// ── Monthly P&L Series ──────────────────────────────────────────
+app.get("/api/stats/monthly-series", (req, res) => {
+  const months = parseInt(req.query.months ?? "12");
+  res.json(getMonthlyPnlSeries(months));
+});
+
+// ── Performance por Setup ──────────────────────────────────────
+app.get("/api/stats/by-setup", (_req, res) => {
+  res.json(getStatsBySetup());
+});
+
+// ── Performance por Símbolo ────────────────────────────────────
+app.get("/api/stats/by-symbol", (_req, res) => {
+  res.json(getStatsBySymbol());
+});
+
+// ── Drawdown Series ────────────────────────────────────────────
+app.get("/api/stats/drawdown", (req, res) => {
+  const days = parseInt(req.query.days ?? "90");
+  res.json(getDrawdownSeries(days));
+});
+
+// ── Close Reason Breakdown (TP1, TP2, TP3, SL, MANUAL) ─────────
+app.get("/api/stats/close-reasons", (_req, res) => {
+  res.json(getCloseReasonBreakdown());
 });
 
 // ── STH Realized Price Monitor ────────────────────────────────
@@ -572,49 +652,5 @@ if (isMain) {
     console.log(`Dashboard: http://localhost:${config.dashboardPort}`);
   });
 
-  // ── Signal expiry — runs every 30s ────────────────────────────
-  // Removes pending signals that are too old, have their SL already
-  // breached, or where the entry zone has been missed (price moved
-  // past the first entry without filling the LIMIT orders).
-  const runExpiryCheck = async () => {
-    try {
-      const expired = await expireStalePendingSignals();
-      if (expired.length > 0) {
-        console.log(
-          `[EXPIRY] Removed ${expired.length} stale signal(s):\n` +
-          expired.map((e) => `  #${e.id} ${e.direction} ${e.symbol} — ${e.reason}`).join("\n")
-        );
-      }
-    } catch (err) {
-      console.warn(`[EXPIRY] Check failed: ${err.message}`);
-    }
-  };
-
-  // Run once immediately on startup (clears any signals left from a previous session),
-  // then every 30 seconds.
-  runExpiryCheck();
-  setInterval(runExpiryCheck, 30_000);
-
-  // ── Position sync — runs every 30s ────────────────────────────
-  // Keeps Coin-M (and USDT-M) positions in the local DB up-to-date
-  // regardless of whether the dashboard is open. Silently skipped
-  // if BingX API keys are not configured (paper trade mode).
-  const runPositionSync = async () => {
-    try {
-      const synced = await syncAllPositions();
-      const coinm  = synced.filter((p) => p.market === "COIN-M");
-      if (coinm.length > 0) {
-        console.log(
-          `[SYNC] Coin-M positions synced: ${coinm.map((p) => `${p.side} ${p.symbol} (id=${p.localId})`).join(", ")}`
-        );
-      }
-    } catch (err) {
-      console.warn(`[SYNC] Position sync error: ${err.message}`);
-    }
-  };
-
-  runPositionSync();
-  setInterval(runPositionSync, 30_000);
+  //
 }
-
-export default app;

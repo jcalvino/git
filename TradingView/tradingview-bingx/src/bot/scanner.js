@@ -2,7 +2,7 @@
 //  Scanner — Fully Automated Trading Bot
 //  Runs every 30s (with lock to prevent overlap).
 //  When a setup fires it auto-executes immediately — no manual
-//  approval required. Daily 1% risk cap enforced before each trade.
+//  approval required. Daily 0.5% loss cap enforced before each trade.
 // ─────────────────────────────────────────────────────────────────
 
 import { fileURLToPath } from "url";
