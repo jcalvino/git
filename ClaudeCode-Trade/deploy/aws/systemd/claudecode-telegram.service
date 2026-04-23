@@ -1,0 +1,36 @@
+[Unit]
+Description=ClaudeCode-Trade Telegram Bot (notifications + Claude Code remote)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=claudebot
+Group=claudebot
+WorkingDirectory=/opt/claudecode-trade
+EnvironmentFile=/opt/claudecode-trade/.env
+ExecStart=/usr/bin/node src/bot/telegram.js
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=claudecode-telegram
+
+# Hardening — um pouco mais relaxado porque precisa executar o CLI `claude`
+# e fazer git commit. Ainda sem capabilities root.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/opt/claudecode-trade /var/log/claudecode-trade
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

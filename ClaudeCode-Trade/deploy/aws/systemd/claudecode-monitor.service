@@ -1,0 +1,34 @@
+[Unit]
+Description=ClaudeCode-Trade Position Monitor (SL/TP every 30s)
+After=network-online.target claudecode-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=claudebot
+Group=claudebot
+WorkingDirectory=/opt/claudecode-trade
+EnvironmentFile=/opt/claudecode-trade/.env
+ExecStart=/usr/bin/node src/bot/monitor.js
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=claudecode-monitor
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/opt/claudecode-trade/data /var/log/claudecode-trade
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
