@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────────────────────────
 //  SL/TP Repair — Audit & Fix Active BingX Positions
 //
-//  Checks every open USDT-M position on BingX for missing Stop-Loss
+//  Checks every open USDC-M position on BingX for missing Stop-Loss
 //  or Take-Profit orders. When found, reads the expected SL/TP prices
 //  from the local DB trade record (or recalculates using strategy
 //  defaults if the trade was opened externally) and places the missing
@@ -19,7 +19,7 @@ import { logError, logInfo } from "./error_tracker.js";
 import config from "../config/index.js";
 
 /**
- * Audit all open BingX USDT-M positions:
+ * Audit all open BingX USDC-M positions:
  *   - Cross-reference against open orders (STOP_MARKET / TAKE_PROFIT_MARKET)
  *   - For positions missing SL or TP1 → apply them from the local trade record
  *     (or recalculate from strategy defaults if no local record exists)
@@ -72,8 +72,8 @@ export async function repairMissingSLTP() {
   // ── 4. For each position, check and repair ─────────────────────
   for (const pos of positions) {
     result.checked++;
-    const bxSymbol  = pos.symbol;                   // e.g. "BTC-USDT"
-    const localSym  = bxSymbol.replace("-", "");    // e.g. "BTCUSDT"
+    const bxSymbol  = pos.symbol;                   // e.g. "BTC-USDC"
+    const localSym  = bxSymbol.replace("-", "");    // e.g. "BTCUSDC"
     const direction = pos.side;                     // "LONG" | "SHORT"
     const key       = `${bxSymbol}|${direction}`;
     const dbKey     = `${localSym}|${direction}`;

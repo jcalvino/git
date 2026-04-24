@@ -84,11 +84,16 @@ export async function executeSignal(signalId) {
   }
 
   // Set leverage for the correct side before placing orders
-  // NCC*/NCFX*/NCSK* symbols already contain a hyphen — pass through unchanged.
-  // Crypto symbols end in "USDT" without hyphen → convert to BingX format.
+  // Símbolo interno → formato BingX API.
+  // Projeto opera em USDC-M (BTC-USDC → BTC-USDC); USDT é legacy.
+  // NCC*/NCFX*/NCSK* já vêm com hífen → pass-through.
   const bingxSymbol = signal.symbol.includes("-")
     ? signal.symbol
-    : signal.symbol.slice(0, -4) + "-USDT";
+    : signal.symbol.endsWith("USDC")
+      ? signal.symbol.slice(0, -4) + "-USDC"
+      : signal.symbol.endsWith("USDT")
+        ? signal.symbol.slice(0, -4) + "-USDT"
+        : signal.symbol;
   await setLeverage(bingxSymbol, signal.leverage ?? 1, signal.direction).catch((err) =>
     console.warn(`Could not set leverage: ${err.message}`)
   );
@@ -222,10 +227,13 @@ export async function executeSignal(signalId) {
         );
       }
     }
-    const tp1Ok = slTpResult.tp1?.orderId && !slTpResult.tp1?.error;
-    if (!tp1Ok) {
-      logWarn("EXECUTOR", `TP1 order failed on trade #${tradeId} ${signal.symbol}`,
-        { error: slTpResult.tp1?.error });
+    // TP1 só gera warn em LIVE mode (em paper não há orderId, nem é falha).
+    if (!slTpResult.tp1?.paper) {
+      const tp1Ok = slTpResult.tp1?.orderId && !slTpResult.tp1?.error;
+      if (!tp1Ok) {
+        logWarn("EXECUTOR", `TP1 order failed on trade #${tradeId} ${signal.symbol}`,
+          { error: slTpResult.tp1?.error });
+      }
     }
   }
 
@@ -233,10 +241,17 @@ export async function executeSignal(signalId) {
     .map((o) => `    Entry ${o.index} [${o.type ?? "?"}]: $${o.price?.toLocaleString()} → ${o.orderId ?? o.error ?? "?"}`)
     .join("\n");
 
+  // Em paper mode não há orderId real — mostramos "PAPER" em vez do
+  // misleading "FAILED: ?". Monitor.js é quem vai efetivamente fechar
+  // a posição comparando preço corrente vs. sl_price/tp*_price no DB.
+  const fmtSlTp = (obj) => {
+    if (!obj) return "—";
+    if (obj.paper) return "PAPER";
+    return obj.orderId ?? (obj.error ? `FAILED: ${obj.error}` : "?");
+  };
   const slTpLog = slTpResult
-    ? `  SL: ${slTpResult.sl?.orderId ?? ("FAILED: " + (slTpResult.sl?.error ?? "?"))} | ` +
-      `TP1: ${slTpResult.tp1?.orderId ?? slTpResult.tp1?.error ?? "?"} | ` +
-      `TP2: ${slTpResult.tp2?.orderId ?? "?"} | TP3: ${slTpResult.tp3?.orderId ?? "?"}`
+    ? `  SL: ${fmtSlTp(slTpResult.sl)} | TP1: ${fmtSlTp(slTpResult.tp1)} | ` +
+      `TP2: ${fmtSlTp(slTpResult.tp2)} | TP3: ${fmtSlTp(slTpResult.tp3)}`
     : "  SL/TP: not attempted";
 
   console.log(
@@ -260,7 +275,11 @@ export async function closeTrade(tradeId, reason = "MANUAL") {
   if (!trade) return { success: false, error: `Trade ${tradeId} not found` };
   if (trade.status === "CLOSED") return { success: false, error: "Trade already closed" };
 
-  const bingxSymbol = trade.symbol.replace("USDT", "-USDT");
+  const bingxSymbol = trade.symbol.includes("-")
+    ? trade.symbol
+    : trade.symbol.endsWith("USDC")
+      ? trade.symbol.replace("USDC", "-USDC")
+      : trade.symbol.replace("USDT", "-USDT");
   const closeSide = trade.direction === "LONG" ? "SELL" : "BUY";
 
   let exitPrice;

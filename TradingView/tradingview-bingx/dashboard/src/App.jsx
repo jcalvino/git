@@ -7,12 +7,12 @@ import { OpenPositions } from "./components/OpenPositions.jsx";
 import { PnlBreakdownChart } from "./components/PnlBreakdownChart.jsx";
 import { TradeHistory } from "./components/TradeHistory.jsx";
 import { OnChainPanel } from "./components/OnChainPanel.jsx";
-import { CoinMBalance } from "./components/CoinMBalance.jsx";
 import { ErrorBanner } from "./components/ErrorBanner.jsx";
 import { MonitorsPanel } from "./components/MonitorsPanel.jsx";
 import { RulesPanel } from "./components/RulesPanel.jsx";
 import { ApiHealthPanel } from "./components/ApiHealthPanel.jsx";
 import { ScanResultsGrid } from "./components/ScanResultsGrid.jsx";
+import { WatchlistPanel } from "./components/WatchlistPanel.jsx";
 import { GoalProgress } from "./components/GoalProgress.jsx";
 import { MonthlyPnlBars } from "./components/MonthlyPnlBars.jsx";
 import { DrawdownChart } from "./components/DrawdownChart.jsx";
@@ -20,11 +20,13 @@ import { CloseReasonDonut } from "./components/CloseReasonDonut.jsx";
 import { SetupPerformance } from "./components/SetupPerformance.jsx";
 import { SymbolPerformance } from "./components/SymbolPerformance.jsx";
 import { RiskDashboard } from "./components/RiskDashboard.jsx";
+import { TrendlinesPanel } from "./components/TrendlinesPanel.jsx";
 
 const TABS = [
   { id: "Painel",        label: "Painel" },
   { id: "Trades",        label: "Trades" },
   { id: "Analytics",     label: "Analytics" },
+  { id: "Trendlines",    label: "Trendlines" },
   { id: "On-Chain",      label: "On-Chain" },
   { id: "Monitoramento", label: "Monitoramento" },
   { id: "Regras",        label: "Regras" },
@@ -218,8 +220,6 @@ export default function App() {
                 )}
               </div>
             </div>
-
-            <CoinMBalance coinMBalance={overview?.coinMBalance} />
           </div>
         )}
 
@@ -266,6 +266,10 @@ export default function App() {
           </div>
         )}
 
+        {activeTab === "Trendlines" && (
+          <TrendlinesPanel />
+        )}
+
         {activeTab === "On-Chain" && (
           <OnChainPanel overview={overview} marketMetrics={marketMetrics} />
         )}
@@ -274,6 +278,7 @@ export default function App() {
           <div className="space-y-5">
             <ApiHealthPanel />
             <ScanResultsGrid />
+            <WatchlistPanel />
 
             <div className="bg-card border border-border rounded-xl p-5 shadow-card">
               <div className="flex items-center justify-between mb-3">

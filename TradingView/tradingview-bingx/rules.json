@@ -1,99 +1,138 @@
 {
-  "watchlist": [
-    "BTCUSD",
-    "ETHUSD",
-    "SOLUSD"
-  ],
+  "_comment": "Base de conhecimento resetada. Preencha conforme a nova estratégia.",
+  "watchlist": [],
   "default_timeframe": "240",
   "bias_criteria": {
-    "bullish": [
-      "Ribbon direction is up (bullish colour)",
-      "Price is above the 20 EMA on the 4H",
-      "RSI is below 60 (room to run)"
-    ],
-    "bearish": [
-      "Ribbon direction is down (bearish colour)",
-      "Price is below the 20 EMA on the 4H",
-      "RSI is above 40 (room to drop)"
-    ],
-    "neutral": [
-      "Ribbon is flat or mixed",
-      "Price is chopping around the 20 EMA",
-      "RSI is between 45 and 55"
-    ]
+    "bullish": [],
+    "bearish": [],
+    "neutral": []
   },
-  "risk_rules": [
-    "Only take trades where R:R is at least 1:2",
-    "No trading in the first 15 minutes of the NY session open",
-    "Maximum 2 open positions at once",
-    "If I have 2 losing trades in a row, stop for the day",
-    "In Extreme Fear conditions (Fear & Greed < 20), reduce position size by 50% — bounces are likely squeeze-driven, not fundamental",
-    "Do not hold open limit orders during high-impact macro releases (NFP, CPI, Fed speeches, FOMC) — spread widens significantly in the 5-minute window around the event",
-    "For SOL specifically: require an extra confirmation candle before entering longs — it has been the weakest of the three structurally",
-    "April 15 tax deadline: expect elevated selling pressure and erratic volume — avoid chasing moves on April 15, treat any dip as noise until NY close",
-    "Around the April 22 ceasefire expiry: binary geopolitical risk — tighten stops or stay flat in the 24h window around that date",
-    "FOMC April 28-29: no new positions within 4h of the Fed decision — volatility will spike"
-  ],
-  "notes": "Market in geopolitical-driven recovery as of April 14, 2026. BTC back above $75K, ETH outperforming for first time in months, SOL stabilising. Three near-term risk events (April 15 tax / April 22 ceasefire / April 28-29 FOMC) could each cause 5–10% swings in either direction. Trade the setups, not the narrative — keep position sizes disciplined until BTC confirms above $75K on a daily close. Update this context block after each major event.",
-  "market_context_2026_04_22": {
-    "last_updated": "2026-04-22",
-    "overall_bias": "Cautious recovery — short-term bullish bounce, macro trend still bearish",
-    "fear_greed_index": 11,
-    "fear_greed_label": "Extreme Fear (46+ consecutive days — longest streak ever recorded)",
-    "total_market_cap": "$2.50–2.55 trillion",
-    "btc_dominance_pct": 57.3,
-    "altcoin_season_index": "34/100 — Bitcoin Season territory, altcoin rotation not yet started",
+  "risk_rules": [],
+  "notes": "",
+  "market_context": {
+    "_comment": "Bloco raiz = fallback. O motor (macro.js + regime-snapshot) lê o `market_context_YYYY_MM_DD` mais recente. Ao registrar update novo, crie bloco datado; este raiz pode espelhar o último pra referência rápida.",
+    "last_updated": "2026-04-24",
+    "overall_bias": "cautious",
+    "fear_greed_index": 50,
+    "fear_greed_label": "Neutral",
+    "btc": {},
+    "eth": {},
+    "sol": {},
+    "macro_drivers_to_watch": [],
+    "key_dates_ahead": []
+  },
+  "market_context_2026_04_24": {
+    "last_updated": "2026-04-24",
+    "overall_bias": "cautious",
+    "overall_bias_reason": "BTC tocou STH Realized Price ($79.391) e EMA21 W1 ($78.500) simultaneamente — zona de exaustão/possível realização. RSI W1 ainda abaixo de 50 (tecnicamente bear), mas divergência bullish oculta e MACD W1 com primeiro crossover positivo desde ago/2025 atenuam viés bearish.",
+    "fear_greed_index": 50,
+    "fear_greed_label": "Neutral",
     "btc": {
-      "price_today": 78213.1,
-      "price_range_recent": "69000–75000",
-      "ath_oct_2025": 126080,
-      "drawdown_from_ath_pct": 41,
-      "key_support": 70000,
-      "key_resistance": "75000–76000",
-      "7day_change_pct": "+7.90",
-      "etf_flows": "BlackRock IBIT logged $269M single-day inflow on Apr 6 — 5-week high. Total BTC ETF inflow that day: $471M.",
-      "sentiment": "56.7% shorts vs 43.3% longs — crowded short book, contrarian bullish signal",
-      "note": "Back above $75K today for the first time in over a month, driven by US-Iran peace talk optimism. Rally faces 3 tests: April 15 tax selling (~$2.8B estimated), April 22 ceasefire expiry, and FOMC April 28-29. Watch $75K as the line in the sand — hold = breakout potential toward $80K, fail = retest $70K."
+      "price_today": 77534.2
     },
     "eth": {
-      "price_today": 2402.25,
-      "price_range_recent": "2100–2380",
-      "key_support": 2189,
-      "key_resistance": "2300–2380",
-      "outperformance": "ETH up 8.6% on April 14 — outperforming BTC for first time in months",
-      "on_chain": "41% jump in on-chain activity — suggests more than a pure short squeeze",
-      "defi_tvl": "$53–55 billion across 1,700+ protocols (68% of total DeFi ecosystem)",
-      "futures_oi": "$4.8 billion open interest, 64.9% long ratio",
-      "upcoming_catalyst": "Glamsterdam upgrade later in 2026 — designed to make ETH significantly faster and cheaper",
-      "note": "If ETH holds above $2,300 and ETF flows stay positive, next target is $2,600–$2,800. Strongest ETH has looked relative to BTC in months — watch for sustained follow-through."
+      "price_today": 2320.11
     },
-    "sol": {
-      "price_today": 84,
-      "price_range_recent": "81–88",
-      "key_support": 81,
-      "key_resistance": "88–90",
-      "futures_sentiment": "66.1% longs — bullish tilt",
-      "defi": "DeFi volume hit $57B in March — network activity stayed strong through geopolitical stress",
-      "upcoming_catalyst": "Alpenglow consensus upgrade (Votor + Rotor — 100–150ms block finality) — no launch date yet",
-      "note": "SOL stabilised above $81 support after weeks of weakness. DeFi activity is a genuine positive. Still needs to clear $88–90 to flip short-term structure bullish. Treat as highest-risk of the three until that level breaks."
-    },
-    "macro_drivers_to_watch": [
-      "US-Iran peace talks: today's rally is partly driven by renewed optimism — any breakdown sends crypto back toward $69K",
-      "April 15 US tax deadline: estimated $2.8B in crypto selling — expect chop or dip, not a trend day",
-      "April 22 ceasefire expiry: binary event — confirmation extends rally, breakdown = sharp risk-off",
-      "FOMC April 28-29: no rate cut expected — hawkish tone would pressure risk assets",
-      "CLARITY Act: 72% passage probability on Polymarket, Senate markup expected second half of April — positive catalyst for broader crypto regulation",
-      "SEC roundtable April 16: potential near-term regulatory clarity signal",
-      "BTC dominance at 57.3%: altcoin season historically starts when dominance falls below 50% — not there yet",
-      "Spot ETF flows: $471M single-day BTC inflow on Apr 6 signals institutional re-engagement — monitor weekly"
+    "sol": {},
+    "analyst_inputs": [
+      {
+        "source": "João Campos",
+        "channel": "Cryptocampos (YouTube)",
+        "specialty": "on-chain",
+        "date": "2026-04-23",
+        "bias_btc": "cautious",
+        "bias_eth": null,
+        "btc": {
+          "price_range_at_analysis": {
+            "low": 77887,
+            "high": 79500
+          },
+          "key_levels": [
+            {
+              "price": 79391,
+              "type": "resistance",
+              "label": "STH Realized Price",
+              "category": "onchain",
+              "strength": "strong",
+              "note": "custo médio de carteiras <155d — zona de turbulência"
+            },
+            {
+              "price": 78500,
+              "type": "resistance",
+              "label": "EMA 21W",
+              "category": "technical",
+              "strength": "strong",
+              "note": "confluência com STH RP reforça resistência"
+            },
+            {
+              "price": 81000,
+              "type": "resistance",
+              "label": "MVRV +1σ (próximo desvio)",
+              "category": "onchain",
+              "strength": "medium"
+            },
+            {
+              "price_low": 64000,
+              "price_high": 68000,
+              "type": "support",
+              "label": "Lei de Potência",
+              "category": "model",
+              "strength": "medium"
+            },
+            {
+              "price_low": 54000,
+              "price_high": 59000,
+              "type": "support",
+              "label": "Psicológico/técnico",
+              "category": "technical",
+              "strength": "medium"
+            },
+            {
+              "price_low": 47000,
+              "price_high": 50000,
+              "type": "support",
+              "label": "CVDD / Preço de Balanço",
+              "category": "onchain",
+              "strength": "strong",
+              "note": "fundo extremo do ciclo"
+            }
+          ],
+          "onchain_metrics": {
+            "mvrv": 1.44,
+            "mvrv_interpretation": "Preço 44% acima do custo médio da rede — zona de distribuição moderada, nem euforia nem barganha",
+            "realized_price": 54200,
+            "lth_cost_basis": 48000,
+            "sth_cost_basis": 79391,
+            "accumulation_zone": {
+              "low": 49000,
+              "high": 76000,
+              "safer_below": 65000
+            },
+            "cycle_floor_projection": {
+              "low": 47000,
+              "high": 50000,
+              "note": "fundos de ciclo têm subido: 0.41 MVRV (2011) → 0.75 (último ciclo)"
+            }
+          },
+          "observations": {
+            "rsi_w1_threshold": "50 é divisor bull/bear — atual abaixo = tecnicamente bear",
+            "rsi_w1_divergence": "bullish oculta — força compradora latente",
+            "rsi_14d_2w_channel": "fundos historicamente telegrafam melhores compras do ciclo",
+            "macd_w1_note": "primeiro crossover positivo desde ago/2025",
+            "price_behavior": "quedas rápidas e poderosas, altas lentas e graduais — sem confirmação de reversão total"
+          },
+          "risk_notes": [
+            "Realizar 20-30% em toque de STH RP / EMA21W se muito exposto, recomprar em níveis inferiores",
+            "DCA cíclico sempre que RSI W1 estiver em sobrevenda ou apresentar divergência bullish",
+            "Manter posição estratégica contra FOMO — em 2018 o rompimento de RSI 50 gerou alta parabólica"
+          ]
+        }
+      }
     ],
-    "key_dates_ahead": [
-      "April 15 — US tax deadline (elevated selling pressure)",
-      "April 16 — SEC crypto roundtable",
-      "April 22 — US-Iran ceasefire expiry (binary geopolitical risk)",
-      "April 28-29 — FOMC meeting (Fed rate decision)",
-      "Late April — CLARITY Act Senate markup"
-    ],
-    "contrarian_signal": "Fear & Greed below 10 for 46+ consecutive days — longest extreme fear streak in crypto history. Historical median 90-day return after similar streaks: +48.5%. Smart money is accumulating. This doesn't mean buy blindly, but it means the risk/reward on quality setups is skewed long on a multi-week horizon."
+    "consensus_levels_btc": [],
+    "consensus_levels_eth": [],
+    "macro_drivers_to_watch": [],
+    "key_dates_ahead": [],
+    "contrarian_signal": "Divergência bullish oculta no RSI W1 + MVRV moderado (1.44) sugerem que a leitura puramente técnica de bear (RSI <50) subestima a força estrutural. On-chain conta uma história de acumulação, não de topo."
   }
 }

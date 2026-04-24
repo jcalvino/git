@@ -8,40 +8,94 @@ import https from "https";
 import config from "../config/index.js";
 import { STRATEGY } from "../config/strategy.js";
 
-// ── Fear & Greed Index (CoinGlass public) ─────────────────────
+// ── Fear & Greed Index — chain de fallback ────────────────────
+//
+// Ordem das fontes (primeira que responder ok vence):
+//   1. alternative.me/fng — fonte canônica, API pública sem key, estável
+//   2. CoinGlass public — backup
+//   3. rules.json — último recurso (tratado no caller)
+//
+// Cada fonte tem timeout curto (4s) pra não travar o scan quando uma cai.
+// Retorno padronizado: { value, label, source, error? }
 
-async function getFearGreedIndex() {
-  return new Promise((resolve) => {
-    const req = https.request(
-      {
-        hostname: "open-api.coinglass.com",
-        path: "/public/v2/index/fear_greed_history?limit=1",
-        method: "GET",
-        headers: { "Content-Type": "application/json" },
-      },
-      (res) => {
-        let data = "";
-        res.on("data", (c) => (data += c));
-        res.on("end", () => {
-          try {
-            const parsed = JSON.parse(data);
-            const latest = parsed.data?.[0] ?? parsed[0];
-            resolve({
-              value: parseInt(latest?.value ?? latest?.index ?? 50),
-              label: latest?.valueClassification ?? latest?.label ?? "Neutral",
-              timestamp: latest?.timestamp ?? Date.now(),
-            });
-          } catch {
-            resolve({ value: 50, label: "Neutral (fallback)", error: true });
-          }
-        });
-      }
-    );
-    req.on("error", () =>
-      resolve({ value: 50, label: "Neutral (unavailable)", error: true })
-    );
+function fetchJson(options, timeoutMs = 4000) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(options, (res) => {
+      let data = "";
+      res.on("data", (c) => (data += c));
+      res.on("end", () => {
+        if (res.statusCode && res.statusCode >= 400) {
+          return reject(new Error(`HTTP ${res.statusCode}`));
+        }
+        try { resolve(JSON.parse(data)); }
+        catch (err) { reject(new Error(`invalid JSON: ${err.message}`)); }
+      });
+    });
+    req.on("error", reject);
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error("timeout"));
+    });
     req.end();
   });
+}
+
+async function getFearGreedFromAlternativeMe() {
+  const json = await fetchJson({
+    hostname: "api.alternative.me",
+    path: "/fng/?limit=1",
+    method: "GET",
+    headers: { "Accept": "application/json", "User-Agent": "tradingview-bingx/1.0" },
+  });
+  const latest = json?.data?.[0];
+  if (!latest?.value) throw new Error("alternative.me: payload sem .data[0].value");
+  return {
+    value: parseInt(latest.value),
+    label: latest.value_classification ?? "Unknown",
+    timestamp: latest.timestamp ? parseInt(latest.timestamp) * 1000 : Date.now(),
+    source: "alternative.me",
+  };
+}
+
+async function getFearGreedFromCoinGlass() {
+  const json = await fetchJson({
+    hostname: "open-api.coinglass.com",
+    path: "/public/v2/index/fear_greed_history?limit=1",
+    method: "GET",
+    headers: { "Content-Type": "application/json" },
+  });
+  const latest = json?.data?.[0] ?? json?.[0];
+  if (!latest?.value) throw new Error("coinglass: payload sem value");
+  return {
+    value: parseInt(latest.value ?? latest.index ?? 50),
+    label: latest.valueClassification ?? latest.label ?? "Neutral",
+    timestamp: latest.timestamp ?? Date.now(),
+    source: "coinglass",
+  };
+}
+
+async function getFearGreedIndex() {
+  const sources = [
+    { name: "alternative.me", fn: getFearGreedFromAlternativeMe },
+    { name: "coinglass",      fn: getFearGreedFromCoinGlass },
+  ];
+  const errors = [];
+  for (const s of sources) {
+    try {
+      const result = await s.fn();
+      if (errors.length > 0) result.tried = errors;
+      return result;
+    } catch (err) {
+      errors.push(`${s.name}: ${err.message}`);
+    }
+  }
+  // Todas falharam — caller usa fallback do rules.json
+  return {
+    value: 50,
+    label: "Neutral (all sources down)",
+    source: "fallback",
+    error: true,
+    tried: errors,
+  };
 }
 
 // ── Rules.json Context Reader ─────────────────────────────────

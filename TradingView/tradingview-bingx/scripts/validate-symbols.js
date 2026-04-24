@@ -19,14 +19,17 @@ function isBingxSymbol(sym) {
     sym.startsWith("NCC") ||
     sym.startsWith("NCFX") ||
     sym.startsWith("NCSK") ||
-    sym === "HYPEUSDT"
+    sym === "HYPEUSDT" ||
+    sym.endsWith("USDC")
   );
 }
 
-// Convert internal symbol to BingX API format
+// Convert internal symbol to BingX API format (USDC primário, USDT legado).
 function toBingxSymbol(sym) {
-  if (sym.includes("-")) return sym;         // already in BingX format
-  return sym.replace("USDT", "-USDT");        // HYPEUSDT → HYPE-USDT
+  if (sym.includes("-")) return sym;                      // já no formato BingX
+  if (sym.endsWith("USDC")) return sym.slice(0, -4) + "-USDC";
+  if (sym.endsWith("USDT")) return sym.slice(0, -4) + "-USDT";
+  return sym;
 }
 
 async function main() {

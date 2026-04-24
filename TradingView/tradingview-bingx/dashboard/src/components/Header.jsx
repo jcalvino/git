@@ -93,24 +93,24 @@ export function Header({ overview, lastUpdate, onRefresh, mode, goalProgress, da
           valueColor={(winRate ?? 0) >= 55 ? "text-positive" : (winRate ?? 0) >= 40 ? "text-warning" : "text-text-dim"}
           sub={goalProgress?.tradeCount !== undefined ? `${goalProgress.tradeCount} trades/mês` : ""}
         />
-        {prices.BTCUSDT && (
+        {(prices.BTCUSDC ?? prices.BTCUSDT) && (
           <KpiCell
             label="BTC"
-            value={`$${Number(prices.BTCUSDT).toLocaleString("en-US", { maximumFractionDigits: 0 })}`}
+            value={`$${Number(prices.BTCUSDC ?? prices.BTCUSDT).toLocaleString("en-US", { maximumFractionDigits: 0 })}`}
             valueColor="text-text"
           />
         )}
-        {prices.ETHUSDT && (
+        {(prices.ETHUSDC ?? prices.ETHUSDT) && (
           <KpiCell
             label="ETH"
-            value={`$${Number(prices.ETHUSDT).toLocaleString("en-US", { maximumFractionDigits: 0 })}`}
+            value={`$${Number(prices.ETHUSDC ?? prices.ETHUSDT).toLocaleString("en-US", { maximumFractionDigits: 0 })}`}
             valueColor="text-text"
           />
         )}
-        {prices.SOLUSDT && (
+        {(prices.SOLUSDC ?? prices.SOLUSDT) && (
           <KpiCell
             label="SOL"
-            value={`$${Number(prices.SOLUSDT).toFixed(2)}`}
+            value={`$${Number(prices.SOLUSDC ?? prices.SOLUSDT).toFixed(2)}`}
             valueColor="text-text"
           />
         )}

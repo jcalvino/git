@@ -278,7 +278,7 @@ export function scoreTechnical(analysis, direction) {
 }
 
 // ── Indicator Calculations ─────────────────────────────────────
-// Pure JS — no TradingView indicators needed.
+// Pure JS — indicadores computados localmente a partir de OHLCV.
 
 /**
  * Exponential Moving Average (last value only).
@@ -383,7 +383,7 @@ function calcRsiArray(closes, period = 14) {
 
 /**
  * Stochastic RSI (rsiPeriod, stochPeriod, kSmooth, dSmooth).
- * Standard TradingView default: (14, 14, 3, 3).
+ * Default padrão da indústria: (14, 14, 3, 3).
  * Returns { k, d, crossingUp, crossingDown } for the latest bar, or null if insufficient data.
  *
  * crossingUp:   %K crossed above %D (bullish)
@@ -474,21 +474,26 @@ function calcRsi(closes, period = 14) {
 const BINANCE_BASE = "https://api.binance.com";
 const BINGX_PUBLIC = "https://open-api.bingx.com";
 
-// Returns true if this symbol must be fetched from BingX
+// Returns true if this symbol must be fetched from BingX (not Binance)
 function _isBingxSymbol(symbol) {
-  // NCC*/NCFX*/NCSK* are already BingX native contract names (contain "-USDT")
+  // NCC*/NCFX*/NCSK* are already BingX native contract names
   if (symbol.startsWith("NCC") || symbol.startsWith("NCFX") || symbol.startsWith("NCSK")) return true;
   // HYPE not on Binance Spot
-  if (symbol === "HYPEUSDT") return true;
+  if (symbol === "HYPEUSDT" || symbol === "HYPEUSDC") return true;
+  // USDC-margined symbols → BingX (Binance USDC spot liquidity é menor que USDT)
+  // Se quiser usar Binance para data, converta para USDT na função de fetch Binance.
+  if (symbol.endsWith("USDC")) return true;
   return false;
 }
 
-// Convert internal symbol to BingX API format
-// NCC*/NCFX*/NCSK* already have the correct format (e.g. "NCCOGOLD2USD-USDT")
-// Crypto exceptions: "HYPEUSDT" → "HYPE-USDT"
+// Convert internal symbol to BingX API format.
+// NCC*/NCFX*/NCSK* already have the correct format.
+// USDC symbols: "BTCUSDC" → "BTC-USDC"; USDT legacy: "BTCUSDT" → "BTC-USDT"
 function _toBingxSymbol(symbol) {
   if (symbol.includes("-")) return symbol; // already BingX format
-  return symbol.replace("USDT", "-USDT");
+  if (symbol.endsWith("USDC")) return symbol.slice(0, -4) + "-USDC";
+  if (symbol.endsWith("USDT")) return symbol.slice(0, -4) + "-USDT";
+  return symbol;
 }
 
 // Internal TF string → Binance/BingX interval (both use same strings)
@@ -529,14 +534,31 @@ async function _bingxOhlcv(symbol, interval, count) {
   const raw  = json.data ?? json;
   if (!Array.isArray(raw)) throw new Error(`[BingX] unexpected klines response for ${bingxSym}`);
 
-  // BingX kline: [openTime, open, high, low, close, volume, ...]
-  return raw.map((k) => ({
-    time:  Math.floor((Array.isArray(k) ? k[0] : k.openTime) / 1000),
-    open:  parseFloat(Array.isArray(k) ? k[1] : k.open),
-    high:  parseFloat(Array.isArray(k) ? k[2] : k.high),
-    low:   parseFloat(Array.isArray(k) ? k[3] : k.low),
-    close: parseFloat(Array.isArray(k) ? k[4] : k.close),
-  }));
+  // BingX kline: pode vir como array [openTime, open, high, low, close, volume, ...]
+  // OU como objeto { time, open, high, low, close, volume } (formato swap/v2).
+  // A API de swap v2 devolve objetos com `time` (ms), NÃO `openTime` — por isso
+  // antes caía em NaN silencioso. Aceitar ambos campos pra ficar resiliente.
+  const bars = raw.map((k) => {
+    const rawTime = Array.isArray(k)
+      ? k[0]
+      : (k.time ?? k.openTime ?? k.t);
+    return {
+      time:  Math.floor(Number(rawTime) / 1000),
+      open:  parseFloat(Array.isArray(k) ? k[1] : k.open),
+      high:  parseFloat(Array.isArray(k) ? k[2] : k.high),
+      low:   parseFloat(Array.isArray(k) ? k[3] : k.low),
+      close: parseFloat(Array.isArray(k) ? k[4] : k.close),
+    };
+  });
+
+  // BingX às vezes devolve klines em ordem DESCENDENTE (mais recente primeiro).
+  // O resto do pipeline assume ordem cronológica ascendente, então garantir isso.
+  if (bars.length >= 2 && Number.isFinite(bars[0].time) && Number.isFinite(bars[1].time)
+      && bars[0].time > bars[1].time) {
+    bars.reverse();
+  }
+
+  return bars;
 }
 
 /**
@@ -663,4 +685,3 @@ export function createBinanceAdapter() {
 }
 
 // Backward-compatible alias
-export const createMcpAdapter = createBinanceAdapter;

@@ -94,6 +94,62 @@ export function getRecentSignals(limit = 20) {
     .map(parseSignalRow);
 }
 
+// ── Watchlist (sinais rejeitados por score, mas com setup triggado) ──
+// Serve pra:
+//   1. Dashboard mostrar "quase entrou" e a gente aprender visualmente
+//      quantos trades perdeu por excesso de conservadorismo.
+//   2. Backtest offline recalibrar pesos dos modifiers e MIN_SCORE.
+export function getBelowThresholdSignals(limit = 50) {
+  return db
+    .prepare(
+      `SELECT * FROM signals
+       WHERE status = 'BELOW_THRESHOLD'
+       ORDER BY created_at DESC
+       LIMIT ?`
+    )
+    .all(limit)
+    .map(parseSignalRow);
+}
+
+// Dedup helper: procura sinal ativo (PENDING_APPROVAL/APPROVED) do mesmo
+// symbol+direction criado nas últimas N horas. Usado pelo scanner pra
+// evitar emitir sinais duplicados a cada ciclo (scanner roda a cada 5min
+// mas setups de H4 não mudam em 5min).
+export function findRecentActiveSignal(symbol, direction, hoursWindow = 4) {
+  const row = db
+    .prepare(
+      `SELECT * FROM signals
+       WHERE symbol = ?
+         AND direction = ?
+         AND status IN ('PENDING_APPROVAL', 'APPROVED')
+         AND datetime(created_at) > datetime('now', ?)
+       ORDER BY created_at DESC
+       LIMIT 1`
+    )
+    .get(symbol, direction, `-${hoursWindow} hours`);
+  return row ? parseSignalRow(row) : null;
+}
+
+// Marca sinais ativos do mesmo symbol+direction como SUPERSEDED quando um
+// deles vira trade. Chamado pelo executor após criar trade com sucesso.
+// Retorna número de sinais marcados.
+export function markSignalsSuperseded(symbol, direction, hoursWindow, winnerSignalId) {
+  const result = db
+    .prepare(
+      `UPDATE signals
+          SET status = 'SUPERSEDED',
+              superseded_by = ?,
+              updated_at = datetime('now')
+        WHERE symbol = ?
+          AND direction = ?
+          AND status IN ('PENDING_APPROVAL', 'APPROVED')
+          AND id != ?
+          AND datetime(created_at) > datetime('now', ?)`
+    )
+    .run(winnerSignalId, symbol, direction, winnerSignalId, `-${hoursWindow} hours`);
+  return result.changes;
+}
+
 // ── Trades ─────────────────────────────────────────────────────
 
 export function openTrade(signalId, orderResult) {
@@ -123,6 +179,19 @@ export function openTrade(signalId, orderResult) {
 
   // Update signal status
   updateSignalStatus(signalId, "APPROVED");
+
+  // Marca outros sinais ativos do mesmo symbol+direction como SUPERSEDED.
+  // Janela de 4h alinhada com SIGNAL_DEDUP_HOURS do scanner. Evita sinais
+  // órfãos ficarem como APPROVED quando só um virou trade.
+  try {
+    const superseded = markSignalsSuperseded(signal.symbol, signal.direction, 4, signalId);
+    if (superseded > 0) {
+      console.log(`[TRADES] ${superseded} signal(s) marcado(s) SUPERSEDED (winner: #${signalId})`);
+    }
+  } catch (err) {
+    // Não trava a abertura do trade se o cleanup falhar
+    console.warn(`[TRADES] markSignalsSuperseded falhou: ${err.message}`);
+  }
 
   // Create position record
   db.prepare(`
@@ -166,6 +235,21 @@ export function closeTrade(tradeId, exitPrice, closeReason) {
   ).run(tradeId);
 
   return { tradeId, pnl, pnlPct };
+}
+
+/**
+ * Retorna o P&L total realizado de um trade: soma de trade_closes (TP1/TP2)
+ * + pnl final de trades.pnl (lote final fechado por TP3/SL).
+ * Útil para decidir se o trade terminou net-positivo.
+ */
+export function getTotalTradePnl(tradeId) {
+  const partials = db.prepare(
+    "SELECT COALESCE(SUM(pnl), 0) AS total FROM trade_closes WHERE trade_id = ?"
+  ).get(tradeId);
+  const trade = db.prepare(
+    "SELECT COALESCE(pnl, 0) AS pnl FROM trades WHERE id = ?"
+  ).get(tradeId);
+  return (partials?.total ?? 0) + (trade?.pnl ?? 0);
 }
 
 export function recordPartialClose(tradeId, closeType, price, size) {
@@ -232,7 +316,7 @@ export function upsertBingXPosition({
   symbol, side, size, entryPrice, markPrice, unrealizedPnl,
   slPrice = 0, tp1Price = 0, tp2Price = 0, tp3Price = 0,
 }) {
-  // BingX returns "ETH-USDT" / "BTC-USD", local DB stores "ETHUSDT" / "BTCUSD"
+  // BingX returns "ETH-USDC" / "BTC-USDC", local DB stores "ETHUSDC" / "BTCUSDC"
   const localSymbol = symbol.replace("-", "");
 
   // ── 1. Try exact match: symbol + correct direction ─────────────
@@ -796,40 +880,33 @@ export function getStats() {
     WHERE t.status = 'OPEN'
   `).all();
 
-  const unrealizedPnl = openTrades.reduce((s, t) => {
-    if (t.unrealized_pnl !== null && t.unrealized_pnl !== undefined && t.unrealized_pnl !== 0) {
-      return s + t.unrealized_pnl;
+  const unrealizedPnl = openTrades.reduce((sum, t) => {
+    if (t.unrealized_pnl != null) return sum + t.unrealized_pnl;
+    if (t.mark_price != null && t.entry_price != null && t.size != null) {
+      const pnl = t.direction === "LONG"
+        ? (t.mark_price - t.entry_price) * t.size
+        : (t.entry_price - t.mark_price) * t.size;
+      return sum + pnl;
     }
-    if (t.mark_price && t.entry_price && t.size) {
-      const diff = t.direction === "LONG"
-        ? (t.mark_price - t.entry_price)
-        : (t.entry_price - t.mark_price);
-      return s + (diff * t.size);
-    }
-    return s;
+    return sum;
   }, 0);
 
-  // Max drawdown (historico 365 dias)
-  let maxDrawdown = 0;
-  try {
-    const series = getDrawdownSeries(365);
-    if (series.length > 0) {
-      maxDrawdown = Math.min(...series.map((d) => d.drawdownDollar ?? 0));
-    }
-  } catch (_err) { /* sem dados */ }
+  // Profit factor = gross wins / |gross losses|
+  const grossWins   = wins.reduce((s, t) => s + t.pnl, 0);
+  const grossLosses = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
+  const profitFactor = grossLosses > 0 ? parseFloat((grossWins / grossLosses).toFixed(2)) : null;
 
   return {
     totalTrades,
     winCount,
     lossCount,
     winRate,
-    totalPnl:               parseFloat(totalPnl.toFixed(2)),
-    avgWin:                 parseFloat(avgWin.toFixed(2)),
-    avgLoss:                parseFloat(avgLoss.toFixed(2)),
-    expectancy:             parseFloat(expectancy.toFixed(2)),
-    unrealizedPnl:          parseFloat(unrealizedPnl.toFixed(2)),
-    totalPnlWithUnrealized: parseFloat((totalPnl + unrealizedPnl).toFixed(2)),
-    maxDrawdown:            parseFloat(maxDrawdown.toFixed(2)),
-    openTradeCount:         openTrades.length,
+    totalPnl:      parseFloat(totalPnl.toFixed(2)),
+    avgWin:        parseFloat(avgWin.toFixed(2)),
+    avgLoss:       parseFloat(avgLoss.toFixed(2)),
+    expectancy:    parseFloat(expectancy.toFixed(2)),
+    profitFactor,
+    unrealizedPnl: parseFloat(unrealizedPnl.toFixed(2)),
+    openCount:     openTrades.length,
   };
 }

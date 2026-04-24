@@ -2,72 +2,57 @@
 #  Git Ignore — Protege dados sensíveis
 # ─────────────────────────────────────────────
 
-# Dependencies
-node_modules/
-dashboard/node_modules/
-
-# Environment — NEVER commit API keys / segredos
+# Env / secrets
 .env
-.env.local
-.env.*.local
-.env.production
-.env.development
-*.key
+.env.*
+!.env.example
 *.pem
-*.p12
-*.pfx
-id_rsa*
-.ssh/
+*.key
 
-# Database (contém histórico de trades e P&L)
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Build outputs
+dist/
+build/
+.next/
+.cache/
+dashboard/dist/
+dashboard/build/
+
+# Data / banco local
 data/
 *.db
-*.db-shm
+*.db-journal
 *.db-wal
-*.sqlite
-*.sqlite3
+*.db-shm
 
 # Logs
 logs/
 *.log
-.fuse_hidden*
 
-# Scanner / monitor state (contém snapshots do mercado)
-last-scan.json
-market_metrics.json
-monitors_state.json
-pids.json
+# Debug / scratch artifacts na raiz
+/eth.json
+/btc.json
+/*.debug.json
+/scratch.*
+/tmp.*
 
-# Screenshots (podem conter dados de conta)
-screenshots/
-*.png.bak
+# Sistema
+.DS_Store
+Thumbs.db
+desktop.ini
 
-# Build output
-dashboard/dist/
-dashboard/.vite/
-dist/
-
-# IDE / editor
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
-.DS_Store
-Thumbs.db
 
-# Node / npm
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.npm/
-.node_repl_history
-
-# Backup
-*.bak
-*.orig
-*.old
-
-# Python / misc
-__pycache__/
-*.pyc
+# Coverage / test output
+coverage/
+.nyc_output/

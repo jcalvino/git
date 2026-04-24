@@ -29,8 +29,15 @@ export async function expireStalePendingSignals() {
   await Promise.allSettled(
     symbols.map(async (sym) => {
       try {
-        // Convert storage symbol (e.g. "BTCUSDT") → BingX REST symbol ("BTC-USDT")
-        const bingxSym = sym.replace("USDT", "-USDT");
+        // Convert storage symbol (e.g. "BTCUSDC") → BingX REST symbol ("BTC-USDC").
+        // USDT path preserved como fallback para sinais legados ainda no DB.
+        const bingxSym = sym.includes("-")
+          ? sym
+          : sym.endsWith("USDC")
+            ? sym.slice(0, -4) + "-USDC"
+            : sym.endsWith("USDT")
+              ? sym.slice(0, -4) + "-USDT"
+              : sym;
         prices[sym] = await getPrice(bingxSym);
       } catch {
         // Price unavailable — skip price checks for this symbol

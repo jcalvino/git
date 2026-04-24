@@ -69,7 +69,7 @@ function loadMonitors() {
  * Evaluate all price monitors for the given symbol.
  * Called once per symbol per scan cycle from scanner.js.
  *
- * @param {string} symbol          — e.g. "ETHUSDT"
+ * @param {string} symbol          — e.g. "ETHUSDC"
  * @param {object} technical       — from analyzeTechnical(); provides .price and .daily.bars
  * @param {number} capitalUsdt     — current capital for position sizing
  * @returns {Array} triggered signals ready to be saved + executed

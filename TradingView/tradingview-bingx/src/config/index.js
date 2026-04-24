@@ -65,16 +65,28 @@ export const config = {
   // Trading mode
   paperTrade: bool("PAPER_TRADE", true),
 
-  // Capital
-  capitalUsdt: num("CAPITAL_USDT", 200),
+  // Capital — projeto opera em USDC-M futures.
+  // Aceita CAPITAL_USDC (preferido) ou CAPITAL_USDT (legacy) como fallback.
+  // Nome do campo `capitalUsdt` mantido para não quebrar consumers.
+  capitalUsdt: num("CAPITAL_USDC", num("CAPITAL_USDT", 200)),
   maxRiskPct: num("MAX_RISK_PCT", 0.01),
   minScore: num("MIN_SCORE", 65),
 
-  // BingX (only required when not in paper trade mode)
+  // BingX — TRADE key (Futures Read + Futures Trade only).
+  // Requerida quando PAPER_TRADE=false.
   bingx: {
     apiKey: optional("BINGX_API_KEY", ""),
     secretKey: optional("BINGX_SECRET_KEY", ""),
     baseUrl: optional("BINGX_BASE_URL", "https://open-api.bingx.com"),
+  },
+
+  // BingX — WITHDRAW key (Withdraw + Internal Transfer only).
+  // Separada da trade key por princípio de menor privilégio:
+  // se a trade key vazar, o atacante não consegue sacar.
+  // Só é obrigatória quando AUTO_WITHDRAW_ENABLED=true e WITHDRAW_DRY_RUN=false.
+  bingxWithdraw: {
+    apiKey: optional("BINGX_WITHDRAW_API_KEY", ""),
+    secretKey: optional("BINGX_WITHDRAW_SECRET_KEY", ""),
   },
 
   // Bot schedule
@@ -115,7 +127,7 @@ export async function refreshCapital() {
   }
 }
 
-// ── Validate BingX keys when live trading ────────────────────
+// ── Validate BingX TRADE keys when live trading ──────────────
 export function validateBingXKeys() {
   if (config.paperTrade) return; // skip in paper mode
   if (!config.bingx.apiKey || config.bingx.apiKey.includes("your_")) {
@@ -132,21 +144,29 @@ export function validateBingXKeys() {
   }
 }
 
-export default config;
+// ── Validate BingX WITHDRAW keys when auto-withdraw is live ──
+// Só cobra a presença das keys quando AUTO_WITHDRAW_ENABLED=true
+// e WITHDRAW_DRY_RUN=false — ou seja, quando o código vai de fato
+// chamar a BingX para transferir e sacar.
+export function validateBingXWithdrawKeys() {
+  const autoEnabled = (process.env.AUTO_WITHDRAW_ENABLED || "false").toLowerCase() === "true";
+  const dryRun      = (process.env.WITHDRAW_DRY_RUN      || "true").toLowerCase()  === "true";
+  if (!autoEnabled || dryRun) return; // fluxo inerte ou dry-run → skip
 
-// ── Self-test (run directly: node src/config/index.js) ────────
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  console.log("Config loaded successfully:\n");
-  const display = { ...config };
-  // Mask API keys in output
-  if (display.bingx.apiKey)
-    display.bingx = {
-      ...display.bingx,
-      apiKey: display.bingx.apiKey.slice(0, 6) + "...",
-      secretKey: "***",
-    };
-  console.log(JSON.stringify(display, null, 2));
-  console.log(`\nMode: ${config.paperTrade ? "PAPER TRADE" : "LIVE TRADING"}`);
-  console.log(`Capital: $${config.capitalUsdt} USDT`);
-  console.log(`Max risk per trade: $${config.capitalUsdt * config.maxRiskPct} USDT`);
+  if (!config.bingxWithdraw.apiKey || config.bingxWithdraw.apiKey.includes("your_")) {
+    throw new Error(
+      "AUTO_WITHDRAW_ENABLED=true but BINGX_WITHDRAW_API_KEY is not set.\n" +
+        "  → Set it in .env (separate from trade key; needs Withdraw + Internal Transfer perms)."
+    );
+  }
+  if (!config.bingxWithdraw.secretKey || config.bingxWithdraw.secretKey.includes("your_")) {
+    throw new Error(
+      "AUTO_WITHDRAW_ENABLED=true but BINGX_WITHDRAW_SECRET_KEY is not set."
+    );
+  }
+  if (!process.env.WITHDRAW_WALLET_ADDRESS) {
+    throw new Error("AUTO_WITHDRAW_ENABLED=true but WITHDRAW_WALLET_ADDRESS is empty.");
+  }
 }
+
+export default config;
