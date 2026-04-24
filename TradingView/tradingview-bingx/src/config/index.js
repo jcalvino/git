@@ -89,6 +89,19 @@ export const config = {
     secretKey: optional("BINGX_WITHDRAW_SECRET_KEY", ""),
   },
 
+  // Telegram — alertas e (Fase 2) comandos remotos.
+  // allowedChatIds: lista separada por vírgula dos chat_ids que recebem
+  // os alertas. Na Fase 2 essa mesma lista vira whitelist de quem pode
+  // mandar comandos (/panic, /approve, …).
+  telegram: {
+    enabled: bool("TELEGRAM_ENABLED", false),
+    token: optional("TELEGRAM_BOT_TOKEN", ""),
+    allowedChatIds: optional("TELEGRAM_ALLOWED_CHAT_IDS", "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  },
+
   // Bot schedule
   scanCron: optional("SCAN_CRON", "0 */4 * * *"),
 

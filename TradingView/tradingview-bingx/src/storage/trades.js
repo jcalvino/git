@@ -559,6 +559,54 @@ export function getSnapshots(days = 30) {
     .reverse(); // chronological order
 }
 
+// ── On-chain snapshots (observability — não afeta scoring) ────
+//
+// Persistidos a cada ciclo do scanner. Pós-B, podemos cruzar
+// onchain_snapshots vs signals.created_at pra correlacionar
+// MVRV/STH/LTH com outcome dos trades.
+
+export function saveOnchainSnapshot(snap) {
+  return db.prepare(`
+    INSERT INTO onchain_snapshots (
+      symbol, price, mvrv, realized_price, sth_rp, lth_rp, cvdd, funding_rate,
+      sources, captured_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    snap.symbol,
+    snap.price          ?? null,
+    snap.mvrv           ?? null,
+    snap.realized_price ?? null,
+    snap.sth_rp         ?? null,
+    snap.lth_rp         ?? null,
+    snap.cvdd           ?? null,
+    snap.funding_rate   ?? null,
+    JSON.stringify(snap.sources ?? {}),
+    snap.captured_at ?? new Date().toISOString(),
+  ).lastInsertRowid;
+}
+
+export function getOnchainSnapshotsBetween(symbol, fromIso, toIso) {
+  return db.prepare(`
+    SELECT * FROM onchain_snapshots
+    WHERE symbol = ?
+      AND datetime(captured_at) >= datetime(?)
+      AND datetime(captured_at) <= datetime(?)
+    ORDER BY captured_at ASC
+  `).all(symbol, fromIso, toIso);
+}
+
+export function getLatestOnchainSnapshot(symbol) {
+  const row = db.prepare(`
+    SELECT * FROM onchain_snapshots
+    WHERE symbol = ?
+    ORDER BY captured_at DESC
+    LIMIT 1
+  `).get(symbol);
+  if (!row) return null;
+  try { row.sources = JSON.parse(row.sources ?? "{}"); } catch { /* keep as is */ }
+  return row;
+}
+
 // ── Daily Risk Limit ──────────────────────────────────────────
 
 /**

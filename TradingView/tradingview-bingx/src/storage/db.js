@@ -118,6 +118,23 @@ db.exec(`
     date          TEXT NOT NULL UNIQUE DEFAULT (date('now'))
   );
 
+  -- On-chain metrics snapshots (recorded every scan, one row per symbol per cycle)
+  -- Pure observability: does NOT feed scoring. Post-B we join on timestamp
+  -- vs signals.created_at to correlate on-chain regime with signal outcome.
+  CREATE TABLE IF NOT EXISTS onchain_snapshots (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol         TEXT NOT NULL,
+    price          REAL,           -- spot price at snapshot time
+    mvrv           REAL,           -- price / realized_price (approx)
+    realized_price REAL,
+    sth_rp         REAL,           -- Short-Term Holder Realized Price
+    lth_rp         REAL,           -- Long-Term Holder Realized Price / cost basis
+    cvdd           REAL,
+    funding_rate   REAL,           -- latest funding rate (perp)
+    sources        TEXT,           -- JSON: which provider supplied each metric
+    captured_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   -- Indexes
   CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol);
   CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status);
@@ -125,6 +142,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
   CREATE INDEX IF NOT EXISTS idx_positions_symbol ON positions(symbol);
   CREATE INDEX IF NOT EXISTS idx_snapshots_date ON snapshots(date);
+  CREATE INDEX IF NOT EXISTS idx_onchain_symbol_time ON onchain_snapshots(symbol, captured_at);
 `);
 
 // ── Migrations (additive — safe on existing DBs) ───────────────

@@ -21,6 +21,7 @@ import { onTradeClosedWithProfit } from "../exchanges/withdraw.js";
 import { shouldMoveStopLoss } from "../strategy/risk.js";
 import config, { refreshCapital } from "../config/index.js";
 import { STRATEGY } from "../config/strategy.js";
+import { notify } from "./notifier.js";
 
 /**
  * Após qualquer `closeTrade(...)`, checa o P&L total do trade e,
@@ -82,6 +83,12 @@ async function checkTrade(trade, currentPrice) {
         `  Price: $${currentPrice.toLocaleString()} | SL: $${trade.sl_price.toLocaleString()}`
     );
     await executeTpOrSl(trade, "SL", currentPrice, trade.size);
+    notify.tradeClosed(
+      { ...trade, exit_price: currentPrice, pnl_pct: unrealizedPnl / (trade.entry_price * trade.size) },
+      "SL",
+      unrealizedPnl,
+      false,
+    ).catch(() => {});
     actions.push({ type: "SL", trade: trade.id, price: currentPrice });
     return actions; // trade is closed, no more checks
   }
@@ -102,7 +109,14 @@ async function checkTrade(trade, currentPrice) {
       );
       await executeTpOrSl(trade, "TP1", currentPrice, closeSize);
       recordPartialClose(trade.id, "TP1", currentPrice, closeSize);
-      actions.push({ type: "TP1", trade: trade.id, price: currentPrice, pnl: unrealizedPnl * STRATEGY.TP_DISTRIBUTION.TP1 });
+      const tp1Pnl = unrealizedPnl * STRATEGY.TP_DISTRIBUTION.TP1;
+      notify.tradeClosed(
+        { ...trade, exit_price: currentPrice, pnl_pct: tp1Pnl / (trade.entry_price * closeSize) },
+        "TP1",
+        tp1Pnl,
+        true,
+      ).catch(() => {});
+      actions.push({ type: "TP1", trade: trade.id, price: currentPrice, pnl: tp1Pnl });
 
       // ── BREAK-EVEN APÓS TP1 (Trade-Runner Mode) ─────────────────
       // Move SL para entry + buffer, protegendo o trade restante.
@@ -132,6 +146,13 @@ async function checkTrade(trade, currentPrice) {
       );
       await executeTpOrSl(trade, "TP2", currentPrice, closeSize);
       recordPartialClose(trade.id, "TP2", currentPrice, closeSize);
+      const tp2Pnl = unrealizedPnl * STRATEGY.TP_DISTRIBUTION.TP2;
+      notify.tradeClosed(
+        { ...trade, exit_price: currentPrice, pnl_pct: tp2Pnl / (trade.entry_price * closeSize) },
+        "TP2",
+        tp2Pnl,
+        true,
+      ).catch(() => {});
       actions.push({ type: "TP2", trade: trade.id, price: currentPrice });
 
       // ── TRAIL STOP APÓS TP2 ─────────────────────────────────────
@@ -163,6 +184,13 @@ async function checkTrade(trade, currentPrice) {
       );
       await executeTpOrSl(trade, "TP3", currentPrice, closeSize);
       closeTrade(trade.id, currentPrice, "TP3");
+      const tp3Pnl = unrealizedPnl * STRATEGY.TP_DISTRIBUTION.TP3;
+      notify.tradeClosed(
+        { ...trade, exit_price: currentPrice, pnl_pct: tp3Pnl / (trade.entry_price * closeSize) },
+        "TP3",
+        tp3Pnl,
+        false,
+      ).catch(() => {});
       await _maybeWithdrawProfit(trade.id, trade.symbol);
       actions.push({ type: "TP3", trade: trade.id, price: currentPrice });
     }
@@ -360,6 +388,12 @@ const isMain = process.argv[1] === __filename;
 
 if (isMain) {
   console.log(`[MONITOR] Iniciando (poll a cada ${POLL_INTERVAL_MS / 1000}s)...`);
+
+  // Ping no Telegram que o monitor subiu (só se TELEGRAM_ENABLED=true).
+  // Não mandamos ping se for só --status (execução de um comando rápido).
+  if (!process.argv.includes("--status")) {
+    notify.startup(`Monitor (${config.paperTrade ? "PAPER" : "LIVE"})`).catch(() => {});
+  }
 
   // CLI --status apenas imprime estado e sai
   if (process.argv.includes("--status")) {

@@ -25,6 +25,7 @@
 
 import { analyzeTechnical, createBinanceAdapter } from "../src/analysis/technical.js";
 import { analyzeMacro } from "../src/analysis/macro.js";
+import { getLatestOnchainSnapshot } from "../src/storage/trades.js";
 import { writeFileSync, mkdirSync, readFileSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -184,6 +185,24 @@ function renderConsole(snapshot) {
   console.log(`  rules.json last_updated: ${rulesBias.lastUpdated ?? "(vazio)"}`);
   console.log();
 
+  // On-chain (último snapshot persistido) — observability, não scoring
+  const onchainBtc = snapshot.onchain?.BTCUSDC;
+  if (onchainBtc) {
+    console.log(C.bold("On-chain (BTC, último snapshot):"));
+    const fmtPrice = (v) => v != null ? `$${Number(v).toLocaleString()}` : "—";
+    const fmtMvrv  = (v) => v != null ? Number(v).toFixed(2) : "—";
+    console.log(`  MVRV (price/realized): ${fmtMvrv(onchainBtc.mvrv)}`);
+    console.log(`  Realized Price:        ${fmtPrice(onchainBtc.realized_price)}`);
+    console.log(`  STH Realized Price:    ${fmtPrice(onchainBtc.sth_rp)}`);
+    console.log(`  LTH Realized Price:    ${fmtPrice(onchainBtc.lth_rp)}`);
+    console.log(`  CVDD:                  ${fmtPrice(onchainBtc.cvdd)}`);
+    console.log(C.grey(`  capturado em: ${onchainBtc.captured_at}`));
+    console.log();
+  } else {
+    console.log(C.grey("On-chain (BTC): nenhum snapshot persistido ainda — scanner precisa rodar pelo menos 1 ciclo"));
+    console.log();
+  }
+
   // Divergências
   if (divergences.length === 0) {
     console.log(C.green("✓ Sem divergências entre snapshot real e rules.json"));
@@ -243,6 +262,23 @@ function buildMarkdown(snapshot) {
   lines.push(`| rules.json last_updated | ${rulesBias.lastUpdated ?? "(vazio)"} |`);
   lines.push("");
 
+  // On-chain
+  const onchainBtc = snapshot.onchain?.BTCUSDC;
+  if (onchainBtc) {
+    lines.push("## On-chain (último snapshot persistido)");
+    lines.push("");
+    lines.push("| Métrica | BTC |");
+    lines.push("|---------|-----|");
+    const f = (v, prefix = "$") => v != null ? `${prefix}${Number(v).toLocaleString()}` : "—";
+    lines.push(`| MVRV (price/realized) | ${onchainBtc.mvrv != null ? Number(onchainBtc.mvrv).toFixed(2) : "—"} |`);
+    lines.push(`| Realized Price | ${f(onchainBtc.realized_price)} |`);
+    lines.push(`| STH Realized Price | ${f(onchainBtc.sth_rp)} |`);
+    lines.push(`| LTH Realized Price | ${f(onchainBtc.lth_rp)} |`);
+    lines.push(`| CVDD | ${f(onchainBtc.cvdd)} |`);
+    lines.push(`| Capturado em | ${onchainBtc.captured_at} |`);
+    lines.push("");
+  }
+
   lines.push("## Divergências");
   lines.push("");
   if (divergences.length === 0) {
@@ -288,7 +324,14 @@ async function main() {
   const fearGreedNow = macro?.fearGreed?.value ?? null;
   const divergences = detectDivergences(regimes, fearGreedNow, rulesBias);
 
-  const snapshot = { regimes, macro, rulesBias, divergences };
+  // Carrega último snapshot on-chain por símbolo (observability)
+  const onchain = {};
+  for (const sym of SYMBOLS) {
+    try { onchain[sym] = getLatestOnchainSnapshot(sym); }
+    catch { onchain[sym] = null; }
+  }
+
+  const snapshot = { regimes, macro, rulesBias, divergences, onchain };
 
   if (JSON_OUT) {
     // remove bars grandes pra facilitar leitura

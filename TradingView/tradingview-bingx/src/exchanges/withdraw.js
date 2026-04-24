@@ -245,7 +245,7 @@ export async function onTradeClosedWithProfit({ symbol, pnl_usdt }) {
       address: WALLET_ADDRESS,
       network: NETWORK,
     });
-ull;
+    let withdrawResult = null;
     try {
       withdrawResult = DRY_RUN
         ? { id: "dry-run-withdraw", amount: usdcAvailable, network: NETWORK }
