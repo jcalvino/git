@@ -17,7 +17,7 @@ export default {
         muted:     "#6B7280",
         "muted-dim":"#4B5563",
         // ── Brand ───────────────────────────────────────
-        accent:     "#00D4FF",       // ciano TradingView-esque
+        accent:     "#00D4FF",       // ciano para destaques
         "accent-dim":"#0099BB",
         "accent-alt":"#7B61FF",      // violeta para analytics
         // ── Signals ─────────────────────────────────────

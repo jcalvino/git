@@ -43,7 +43,8 @@ db.exec(`
     breakdown   TEXT,         -- JSON: scoring breakdown
     inputs      TEXT,         -- JSON: analysis inputs
     status      TEXT NOT NULL DEFAULT 'PENDING_APPROVAL'
-                  CHECK (status IN ('PENDING_APPROVAL', 'APPROVED', 'REJECTED', 'EXPIRED', 'BELOW_THRESHOLD')),
+                  CHECK (status IN ('PENDING_APPROVAL', 'APPROVED', 'REJECTED', 'EXPIRED', 'BELOW_THRESHOLD', 'SUPERSEDED')),
+    superseded_by INTEGER REFERENCES signals(id),
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
   );

@@ -1,6 +1,11 @@
 // ─────────────────────────────────────────────────────────────────
-//  BingX USDT-M Perpetual Futures API Client
-//  REST + WebSocket for BTC/ETH trading
+//  BingX USDC-M Perpetual Futures API Client
+//  REST + WebSocket for BTC/ETH trading (símbolos: BTC-USDC, ETH-USDC)
+//
+//  Refatorado 2026-04-23 — projeto migrado USDT-M → USDC-M.
+//  Os endpoints /openApi/swap/v2/* da BingX aceitam símbolos USDC-M;
+//  a diferença é o sufixo do symbol (BTC-USDC vs BTC-USDT) e o
+//  asset de colateral (USDC em vez de USDT).
 // ─────────────────────────────────────────────────────────────────
 
 import { createHmac } from "crypto";
@@ -174,25 +179,35 @@ function requestPublic(method, fullPath) {
 export async function getBalance() {
   const data = await request("GET", "/openApi/swap/v2/user/balance");
 
-  // BingX returns one of:
+  // BingX retorna um dos formatos:
   //   { balance: { asset, balance, availableMargin, ... } }  ← single object
   //   { balance: [{ asset, ... }] }                          ← array (older API)
   //   [{ asset, ... }]                                       ← bare array
-  let usdt;
+  //
+  // Projeto agora opera em USDC-M — preferimos asset "USDC", mas
+  // damos fallback para USDT/primeiro asset para não quebrar leitura
+  // durante migração ou em contas que ainda têm USDT parado.
+  let coin;
+  const pickAsset = (arr) =>
+    arr.find((a) => a.asset === "USDC") ??
+    arr.find((a) => a.asset === "USDT") ??
+    arr[0];
+
   if (Array.isArray(data)) {
-    usdt = data.find((a) => a.asset === "USDT") ?? data[0];
+    coin = pickAsset(data);
   } else if (Array.isArray(data?.balance)) {
-    usdt = data.balance.find((a) => a.asset === "USDT") ?? data.balance[0];
+    coin = pickAsset(data.balance);
   } else if (data?.balance) {
-    usdt = data.balance; // single object — most common response
+    coin = data.balance; // single object — most common response
   } else {
-    usdt = data;
+    coin = data;
   }
 
   return {
-    available: parseFloat(usdt?.availableMargin ?? usdt?.available ?? 0),
-    total: parseFloat(usdt?.balance ?? usdt?.equity ?? usdt?.total ?? 0),
-    unrealizedPnl: parseFloat(usdt?.unrealizedProfit ?? 0),
+    asset: coin?.asset ?? "USDC",
+    available: parseFloat(coin?.availableMargin ?? coin?.available ?? 0),
+    total: parseFloat(coin?.balance ?? coin?.equity ?? coin?.total ?? 0),
+    unrealizedPnl: parseFloat(coin?.unrealizedProfit ?? 0),
   };
 }
 
@@ -510,11 +525,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   console.log("Testing BingX connection...\n");
 
   const results = await Promise.allSettled([
-    getPrice("BTC-USDT"),
-    getPrice("ETH-USDT"),
-    getFundingRate("BTC-USDT"),
-    getOpenInterest("BTC-USDT"),
-    getOrderBook("BTC-USDT", 5),
+    getPrice("BTC-USDC"),
+    getPrice("ETH-USDC"),
+    getFundingRate("BTC-USDC"),
+    getOpenInterest("BTC-USDC"),
+    getOrderBook("BTC-USDC", 5),
   ]);
 
   const [btcPrice, ethPrice, funding, oi, book] = results;
@@ -544,16 +559,14 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (config.bingx.apiKey && !config.bingx.apiKey.includes("your_")) {
     try {
       const bal = await getBalance();
+      const asset = bal.asset ?? "USDC";
       console.log(`\n✅ BingX connection OK`);
-      console.log(`   Available: $${bal.available.toFixed(2)} USDT`);
-      console.log(`   Total: $${bal.total.toFixed(2)} USDT`);
-      console.log(`   Unrealized P&L: $${bal.unrealizedPnl.toFixed(2)}`);
+      console.log(`   Available: $${bal.available.toFixed(2)} ${asset}`);
+      console.log(`   Unrealized P&L: ${bal.unrealizedPnl?.toFixed(2) ?? "0.00"} ${asset}`);
     } catch (err) {
-      console.log(`\n❌ Auth failed: ${err.message}`);
+      console.log(`\n❌ BingX balance check failed: ${err.message}`);
     }
   } else {
-    console.log(
-      "\n⚠  API key not configured — auth endpoints skipped (paper trade mode)"
-    );
+    console.log("\n(Skipping balance check — API keys not configured.)");
   }
 }

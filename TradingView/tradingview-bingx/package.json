@@ -1,13 +1,18 @@
 {
   "name": "tradingview-bingx",
   "version": "1.0.0",
-  "description": "Semi-automated BTC/ETH trading system — BingX USDT-M Futures + TradingView Desktop CDP",
+  "description": "Semi-automated BTC/ETH trading system - BingX USDC-M Perpetual Futures",
   "type": "module",
   "main": "src/bot/scanner.js",
   "scripts": {
     "start": "node scripts/start.js",
     "stop": "node scripts/stop.js",
     "restart": "node scripts/restart.js",
+    "reset": "node scripts/reset-stack.js",
+    "docker:up": "docker compose up -d --build",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f app",
+    "docker:reset": "docker compose down -v && docker compose up -d --build",
     "update-rules": "node scripts/update-rules.js",
     "scan": "node src/bot/scanner.js --once",
     "bot": "node src/bot/scanner.js",
@@ -18,6 +23,7 @@
     "test:technical": "node src/analysis/technical.js",
     "test:signals": "node src/strategy/signals.js",
     "test:bingx": "node src/exchanges/bingx.js",
+    "test:withdraw": "node src/exchanges/withdraw.js",
     "validate-symbols": "node scripts/validate-symbols.js"
   },
   "dependencies": {
@@ -32,6 +38,6 @@
     "concurrently": "^9.1.2"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.0.0"
   }
 }

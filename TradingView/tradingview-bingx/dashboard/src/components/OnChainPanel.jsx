@@ -13,7 +13,7 @@ export function OnChainPanel({ overview, marketMetrics }) {
     ? new Date(m.updatedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
     : null;
 
-  const btcPrice = overview?.prices?.BTCUSDT ?? null;
+  const btcPrice = overview?.prices?.BTCUSDC ?? overview?.prices?.BTCUSDT ?? null;
 
   return (
     <div className="space-y-4">

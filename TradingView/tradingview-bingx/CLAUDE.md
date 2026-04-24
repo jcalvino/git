@@ -1,14 +1,17 @@
 # tradingview-bingx — Claude Instructions
 
-Semi-automated trading system for BTC and ETH on BingX USDT-M Perpetual Futures.
-Capital: $128 USDT | Risk: 1% of total / 20% per slot | TPs: Fibonacci distribution | No leverage (1x).
+Semi-automated trading system for BTC and ETH on BingX USDC-M Perpetual Futures.
+Capital: ~$1100 USDC | Risk: 1% of total / 20% per slot | TPs: Fibonacci distribution | No leverage (1x).
+Todos os trades são liquidados em USDC. Auto-withdraw (opt-in) manda USDC direto do PERP → Fund/Main → wallet externa na rede BASE.
 
 ## Architecture
 
 ```
-TradingView Desktop (CDP :9222)
-       ↓ tv-mcp/src/core/ (local CDP bridge)
-src/analysis/technical.js   ← EMA200/D, EMA21/W, MACD/W, RSI/W
+Binance Spot REST (OHLCV público) ─┐
+BingX REST (preços/orderbook)     ─┤
+CoinGlass (funding/OI/fear-greed) ─┘
+       ↓
+src/analysis/technical.js   ← EMA200/D, EMA21/W, MACD/W, RSI/W (calc local)
 src/analysis/orderbook.js   ← BingX order book imbalance
 src/analysis/onchain.js     ← CoinGlass: funding rate, OI, long/short ratio
 src/analysis/macro.js       ← rules.json context + fear/greed index
@@ -29,14 +32,14 @@ dashboard/                  ← React + Tailwind :3000
 ## Common Tasks
 
 ### "Analisar BTC agora"
-Use TradingView MCP tools directly:
-1. `chart_set_symbol` with `symbol: "BTCUSDT"` → muda para BTC
-2. `chart_set_timeframe` with `timeframe: "D"` → timeframe diário
-3. `data_get_study_values` → lê EMA200, EMA21, MACD, RSI
-4. `quote_get` → preço atual
-5. `chart_set_timeframe` with `timeframe: "W"` → muda para semanal
-6. `data_get_study_values` → lê indicadores no semanal
-7. `capture_screenshot` → captura visual
+Rode `analyzeTechnical()` diretamente — ele puxa OHLCV da Binance Spot REST
+e calcula todos os indicadores localmente:
+
+```bash
+node -e "import('./src/analysis/technical.js').then(m => m.analyzeTechnical('BTCUSDC', m.createBinanceAdapter()).then(r => console.log(JSON.stringify(r, null, 2))))"
+```
+
+Retorna `{ symbol, price, daily:{ema200,rsi,…}, weekly:{ema21,macd,rsi,stochRsi,…}, entry:{…}, orderbook:{imbalance,…}, funding:{rate,bias} }`.
 
 ### "Gerar sinal de trade"
 ```bash
@@ -94,16 +97,12 @@ Ou executar automaticamente:
 node scripts/update-rules.js
 ```
 
-## TradingView CDP Bridge
+## Fonte de dados de mercado
 
-Os arquivos de integração com o TradingView Desktop estão em `tv-mcp/src/`:
-- `tv-mcp/src/connection.js` — conexão CDP
-- `tv-mcp/src/core/` — funções de chart, data, health
-
-Para iniciar TradingView com CDP habilitado:
-```
-scripts\launch_tv_debug.bat
-```
+Indicadores técnicos são computados em `src/analysis/technical.js` a partir de
+OHLCV público da Binance Spot REST (`api.binance.com`). Preços de execução,
+orderbook e funding rate vêm da BingX REST. On-chain vem da CoinGlass. Sem
+dependência de cliente desktop ou bridge CDP.
 
 ## Modo Paper Trading
 

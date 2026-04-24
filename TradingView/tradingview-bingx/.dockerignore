@@ -1,0 +1,50 @@
+# ── Dependências ─────────────────────────────────────────────────
+node_modules
+dashboard/node_modules
+dashboard/dist
+dist
+.npm
+.node_repl_history
+
+# ── Estado local / dados ─────────────────────────────────────────
+data
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.log
+last-scan.json
+market_metrics.json
+monitors_state.json
+pids.json
+screenshots
+
+# ── Segredos e env ───────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+id_rsa*
+
+# ── VCS / CI ─────────────────────────────────────────────────────
+.git
+.gitignore
+.github
+
+# ── IDE / OS ─────────────────────────────────────────────────────
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Backups ──────────────────────────────────────────────────────
+*.bak
+*.orig
+*.old

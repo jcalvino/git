@@ -60,6 +60,19 @@ if (existsSync(PIDS_FILE)) {
   } catch { /* corrupt pids.json — proceed */ }
 }
 
+// ── Step 0: Repo health check ──────────────────────────────────
+// Aborta antes de qualquer serviço subir se encontrar null bytes,
+// truncamento ou sintaxe inválida. Evita bot rodar com código quebrado.
+console.log("0/5  Verificando integridade do repo (repo-health)...");
+try {
+  execSync("node scripts/repo-health.js --quiet", { cwd: ROOT, stdio: "inherit" });
+  console.log("     ✓ Repo saudável\n");
+} catch (err) {
+  console.error("\n     ✗ repo-health falhou — abortando startup.");
+  console.error("       Rode 'node scripts/repo-health.js' para o diagnóstico completo.\n");
+  process.exit(1);
+}
+
 // ── Step 1: Update rules.json ──────────────────────────────────
 console.log("1/5  Atualizando rules.json...");
 try {

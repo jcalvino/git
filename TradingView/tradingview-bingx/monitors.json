@@ -1,51 +1,7 @@
 {
   "_comment": "Price level monitors — state machine triggers.",
-  "_comment2": "Each monitor is evaluated every scanner cycle (every 5 min).",
-  "_comment3": "State is persisted across restarts in data/monitors_state.json.",
-  "_comment4": "To reset a triggered monitor: set 'enabled: false' then back to 'true'.",
-  "monitors": [
-
-    {
-      "id": "ETH_SHORT_2560_2500",
-      "symbol": "ETHUSDT",
-      "enabled": true,
-      "name": "Monitor 1 — ETH SHORT: fraqueza em 2560 → entrada em 2500",
-      "description": "ETH toca 2560 e perde força no próximo candle → aguardar queda até 2500 para abrir SHORT",
-
-      "type": "TOUCH_WEAKNESS_ENTRY",
-      "direction": "SHORT",
-
-      "touch_level": 2560,
-      "entry_level": 2500,
-
-      "leverage": 5,
-      "sl_pct": 0.025,
-      "tp_r": { "tp1": 1.618, "tp2": 2.618, "tp3": 4.236 },
-
-      "reset_above": 2630,
-      "expiry_hours": 72
-    },
-
-    {
-      "id": "ETH_LONG_2560_RETEST",
-      "symbol": "ETHUSDT",
-      "enabled": true,
-      "name": "Monitor 2 — ETH LONG: rompimento de 2560 + reteste + sustentação",
-      "description": "ETH fecha acima de 2560 → retesta 2560 e sustenta (não rompe abaixo) → abrir LONG com TP em 2800",
-
-      "type": "BREAKOUT_RETEST",
-      "direction": "LONG",
-
-      "level": 2560,
-      "retest_tolerance_pct": 0.012,
-
-      "leverage": 5,
-      "sl_pct": 0.015,
-      "tp_fixed": [2640, 2720, 2800],
-
-      "reset_below": 2490,
-      "expiry_hours": 72
-    }
-
-  ]
+  "_comment2": "Cada monitor é avaliado a cada ciclo do scanner.",
+  "_comment3": "State persiste em data/monitors_state.json.",
+  "_comment4": "Schema completo documentado em skills/setup-detector/SKILL.md.",
+  "monitors": []
 }

@@ -6,20 +6,36 @@
 
 import { fileURLToPath } from "url";
 import { getPrice, getPositions } from "../exchanges/bingx.js";
-import { getCoinMPositions } from "../exchanges/bingx_coinm.js";
 import {
   getOpenTrades,
   getOpenPositions,
   updatePosition,
   recordPartialClose,
   closeTrade,
+  getTotalTradePnl,
   upsertBingXPosition,
   updateTradeStopLoss,
 } from "../storage/trades.js";
 import { placeOrder, getOpenOrders, cancelOrder } from "../exchanges/bingx.js";
+import { onTradeClosedWithProfit } from "../exchanges/withdraw.js";
 import { shouldMoveStopLoss } from "../strategy/risk.js";
 import config, { refreshCapital } from "../config/index.js";
 import { STRATEGY } from "../config/strategy.js";
+
+/**
+ * Após qualquer `closeTrade(...)`, checa o P&L total do trade e,
+ * se positivo, dispara o fluxo de auto-withdraw. No-op se
+ * AUTO_WITHDRAW_ENABLED=false ou PAPER_TRADE=true.
+ */
+async function _maybeWithdrawProfit(tradeId, symbol) {
+  try {
+    const totalPnl = getTotalTradePnl(tradeId);
+    if (totalPnl <= 0) return;
+    await onTradeClosedWithProfit({ symbol, pnl_usdt: totalPnl });
+  } catch (err) {
+    console.error(`[MONITOR] withdraw hook falhou (trade #${tradeId}): ${err.message}`);
+  }
+}
 
 const POLL_INTERVAL_MS = 30_000; // 30 seconds
 
@@ -147,6 +163,7 @@ async function checkTrade(trade, currentPrice) {
       );
       await executeTpOrSl(trade, "TP3", currentPrice, closeSize);
       closeTrade(trade.id, currentPrice, "TP3");
+      await _maybeWithdrawProfit(trade.id, trade.symbol);
       actions.push({ type: "TP3", trade: trade.id, price: currentPrice });
     }
   }
@@ -154,14 +171,12 @@ async function checkTrade(trade, currentPrice) {
   return actions;
 }
 
-// Convert internal symbol (e.g. BTCUSDT, XAUUSDT) to BingX API format
+// Convert internal symbol (e.g. BTCUSDC, ETHUSDC) to BingX API format (BTC-USDC).
+// O projeto opera apenas em USDC-M após 2026-04-23.
 function _toBingXSymbol(symbol) {
-  // BingX format uses hyphens: BTC-USDT, XAU-USDT
-  // Find the last occurrence of USDT and insert a hyphen before it
-  if (symbol.endsWith("USDT")) {
-    return symbol.slice(0, -4) + "-USDT";
-  }
-  return symbol; // fallback (e.g. BTC-USD for Coin-M)
+  if (symbol.includes("-")) return symbol; // já formatado
+  if (symbol.endsWith("USDC")) return symbol.slice(0, -4) + "-USDC";
+  return symbol;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -250,6 +265,7 @@ async function executeTpOrSl(trade, type, price, size) {
     console.log(`  [PAPER] Would place reduce order: ${type} ${size} @ $${price}`);
     if (type === "SL" || type === "TP3") {
       closeTrade(trade.id, price, type);
+      await _maybeWithdrawProfit(trade.id, trade.symbol);
     }
     return;
   }
@@ -267,6 +283,7 @@ async function executeTpOrSl(trade, type, price, size) {
     });
     if (type === "SL" || type === "TP3") {
       closeTrade(trade.id, price, type);
+      await _maybeWithdrawProfit(trade.id, trade.symbol);
     }
   } catch (err) {
     // 101205 = "No position to close" — BingX already closed it via its own SL/TP order.
@@ -277,6 +294,7 @@ async function executeTpOrSl(trade, type, price, size) {
       );
       if (type === "SL" || type === "TP3") {
         closeTrade(trade.id, price, type);
+        await _maybeWithdrawProfit(trade.id, trade.symbol);
       } else {
         recordPartialClose(trade.id, type, price, size);
       }
@@ -295,16 +313,9 @@ async function executeTpOrSl(trade, type, price, size) {
 export async function monitorOnce() {
   const actions = [];
 
-  // ── 1. Sync live positions from BingX → local DB ─────────────
+  // ── 1. Sync live USDC-M positions from BingX → local DB ──────
   try {
-    const [usdtRes, coinmRes] = await Promise.allSettled([
-      getPositions(),
-      getCoinMPositions(),
-    ]);
-    const livePositions = [
-      ...(usdtRes.status  === "fulfilled" ? (usdtRes.value  ?? []) : []),
-      ...(coinmRes.status === "fulfilled" ? (coinmRes.value ?? []) : []),
-    ];
+    const livePositions = (await getPositions()) ?? [];
     for (const pos of livePositions) {
       try { upsertBingXPosition(pos); } catch (_) { /* continue */ }
     }
@@ -360,19 +371,17 @@ if (isMain) {
     process.exit(0);
   }
 
-  const loop = async () => {
+  const runLoop = async () => {
     try {
-      // Refresh capital (em caso de depositos / saques)
-      try { await refreshCapital(); } catch (_) {}
       const actions = await monitorOnce();
       if (actions && actions.length > 0) {
-        console.log(`[MONITOR] ${actions.length} acao(oes) executada(s)`);
+        console.log(`[MONITOR] ${actions.length} action(s):`, actions.map((a) => a.type).join(", "));
       }
     } catch (err) {
-      console.error(`[MONITOR] Falha na iteracao: ${err.message}`);
+      console.error(`[MONITOR] Loop error: ${err.message}`);
     }
   };
 
-  loop();
-  setInterval(loop, POLL_INTERVAL_MS);
+  runLoop();
+  setInterval(runLoop, POLL_INTERVAL_MS);
 }

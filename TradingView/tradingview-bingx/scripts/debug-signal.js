@@ -2,7 +2,7 @@
 //  debug-signal.js — Mostra o rationale completo de um ativo
 //  Usage: node scripts/debug-signal.js NCCOGOLD2USD-USDT
 //         node scripts/debug-signal.js NCSKTSLA2USD-USDT
-//         node scripts/debug-signal.js BTCUSDT
+//         node scripts/debug-signal.js BTCUSDC
 // ─────────────────────────────────────────────────────────────────
 
 import { analyzeTechnical, createBinanceAdapter } from "../src/analysis/technical.js";

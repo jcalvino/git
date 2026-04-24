@@ -18,9 +18,14 @@ import {
   upsertBingXPosition, saveSnapshot,
   isDailyLimitReached, getDailyPnl,
   isDailyTargetReached, getDailyProfit,
+  findRecentActiveSignal,
 } from "../storage/trades.js";
+
+// Janela de dedup: se existe sinal ativo (PENDING_APPROVAL/APPROVED)
+// do mesmo symbol+direction nas últimas N horas, novo sinal é pulado.
+// 4h = TF principal dos setups. Setup não muda em 5min (intervalo do scan).
+const SIGNAL_DEDUP_HOURS = 4;
 import { getBalance, getPositions } from "../exchanges/bingx.js";
-import { getCoinMPositions, openCoinMHedge, isCoinMEnabled } from "../exchanges/bingx_coinm.js";
 import { executeSignal } from "./executor.js";
 import config, { refreshCapital } from "../config/index.js";
 import { STRATEGY } from "../config/strategy.js";
@@ -87,18 +92,17 @@ async function runScan() {
   lastScanSummary.dailyLimited   = dayLimited;
   lastScanSummary.dailyPnl       = dailyPnl;
 
-  // ── 3. Sync live BingX positions into local DB ─────────────────
-  try {
-    const [usdtPos, coinmPos] = await Promise.allSettled([
-      getPositions(),
-      getCoinMPositions(),
-    ]);
-    const allLive = [
-      ...(usdtPos.status === "fulfilled" ? usdtPos.value : []),
-      ...(coinmPos.status === "fulfilled" ? coinmPos.value : []),
-    ];
-    for (const pos of allLive) upsertBingXPosition(pos);
-  } catch { /* paper mode or no API key */ }
+  // ── 3. Sync live BingX USDC-M positions into local DB ──────────
+  // Em PAPER_TRADE=true pulamos — caso contrário posições reais da
+  // BingX (abertas manualmente ou em sessão live anterior) vazam pro
+  // histórico local como trade_type=EXTERNAL e poluem o win rate do bot.
+  // Para ingerir externos novamente basta PAPER_TRADE=false.
+  if (!config.paperTrade) {
+    try {
+      const live = await getPositions();
+      for (const pos of (live ?? [])) upsertBingXPosition(pos);
+    } catch { /* no API key or request failed */ }
+  }
 
   // ── 4. Fetch market data via Binance + run analysis ───────────
   try {
@@ -158,7 +162,35 @@ async function runScan() {
 
         if (!signal.direction || signal.status === "BELOW_THRESHOLD") {
           console.log(`  → No setup: ${signal.rationale?.[0] ?? "below threshold"}`);
-          results.push({ symbol, signal });
+          // Breakdown (base + cada modifier) — fica logo abaixo, indentado
+          const extras = (signal.rationale ?? []).slice(1);
+          for (const line of extras) {
+            if (line) console.log(`      · ${line}`);
+          }
+
+          // Persistência seletiva:
+          // • status=BELOW_THRESHOLD com direction preenchida → setup triggerou
+          //   mas não cruzou MIN_SCORE. Salvar pra backtest + watchlist no dash.
+          // • direction=null → nada triggerou (_noSignal puro). Não salvar —
+          //   evita poluir a tabela com ticks de silêncio.
+          let rejectedId = null;
+          if (signal.status === "BELOW_THRESHOLD" && signal.direction) {
+            // Dedup: se já tem sinal ativo mesmo symbol+direction nas últimas 4h,
+            // não salva BELOW_THRESHOLD também (evita inflar estatísticas contrafactuais)
+            const dup = findRecentActiveSignal(signal.symbol, signal.direction, SIGNAL_DEDUP_HOURS);
+            if (dup) {
+              console.log(`      ↳ Watchlist skip: signal ativo #${dup.id} mesmo ${signal.direction} em ${signal.symbol} há <${SIGNAL_DEDUP_HOURS}h`);
+            } else {
+              try {
+                rejectedId = saveSignal(signal);
+                console.log(`      ↳ Watchlist signal #${rejectedId} salvo (${signal.setup_id})`);
+              } catch (saveErr) {
+                console.warn(`      ↳ Falha ao salvar watchlist signal: ${saveErr.message}`);
+              }
+            }
+          }
+
+          results.push({ symbol, signal, signalId: rejectedId });
           continue;
         }
 
@@ -170,6 +202,20 @@ async function runScan() {
           `SL: $${signal.sl?.toLocaleString()} | ` +
           `TP1: $${signal.tp1?.toLocaleString()}`
         );
+
+        // Dedup guard: se já tem sinal ativo do mesmo symbol+direction nas últimas 4h,
+        // pula pra evitar trades duplicados e ruído nas estatísticas. Fix do bug onde
+        // scanner (roda cada 5min) gerava N sinais idênticos pro mesmo setup de H4.
+        const dup = findRecentActiveSignal(signal.symbol, signal.direction, SIGNAL_DEDUP_HOURS);
+        if (dup) {
+          console.log(
+            `  → Skipped: signal ativo #${dup.id} ${dup.status} ` +
+            `(${signal.direction} ${symbol}) criado em ${dup.created_at} — ` +
+            `dedup window ${SIGNAL_DEDUP_HOURS}h`
+          );
+          results.push({ symbol, signal, skipped: "dedup", dupSignalId: dup.id });
+          continue;
+        }
 
         const signalId = saveSignal(signal);
 
@@ -191,27 +237,6 @@ async function runScan() {
             tradeId: execResult.tradeId,
             signalId, entry: signal.entry, sl: signal.sl,
           });
-
-          // ── Coin-M SHORT hedge (BTC bearish setup only) ───────────
-          if (
-            symbol === "BTCUSDT" &&
-            signal.direction === "SHORT" &&
-            isCoinMEnabled()
-          ) {
-            try {
-              const hedge = await openCoinMHedge(signal.price ?? signal.entry);
-              console.log(
-                `  ✓ Coin-M hedge opened: ${hedge.contracts} contract(s) @ ~$${hedge.price ?? signal.entry}`
-              );
-              logInfo("EXECUTOR", "Coin-M hedge opened alongside BTCUSDT SHORT", {
-                contracts: hedge.contracts,
-                paper: hedge.paper,
-              });
-            } catch (hedgeErr) {
-              logWarn("EXECUTOR", `Coin-M hedge failed: ${hedgeErr.message}`, { symbol });
-              console.warn(`  ⚠ Coin-M hedge failed: ${hedgeErr.message}`);
-            }
-          }
 
           results.push({ symbol, signalId, tradeId: execResult.tradeId, signal });
         } else {

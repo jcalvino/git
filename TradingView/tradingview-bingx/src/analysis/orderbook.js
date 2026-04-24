@@ -10,7 +10,7 @@ import { STRATEGY } from "../config/strategy.js";
  * Analyze order book for a symbol.
  * Returns imbalance ratio and directional signal.
  *
- * @param {string} symbol — e.g. "BTCUSDT" or "BTC-USDT"
+ * @param {string} symbol — e.g. "BTCUSDC" or "BTC-USDC" (USDT aliases suportados)
  * @returns {OrderBookAnalysis}
  */
 export async function analyzeOrderBook(symbol) {
@@ -25,8 +25,7 @@ export async function analyzeOrderBook(symbol) {
   }
 
   // Calculate total bid and ask volume within 0.5% of mid price
-  const midPrice =
-    (bids[0].price + asks[0].price) / 2;
+  const midPrice = (bids[0].price + asks[0].price) / 2;
   const rangeFilter = midPrice * 0.005; // 0.5% range
 
   const totalBidVol = bids
@@ -114,9 +113,9 @@ export function scoreOrderBook(analysis, direction) {
 
 // ── Helpers ────────────────────────────────────────────────────
 function toBingXSymbol(symbol) {
-  // BingX perpetual format: BTC-USDT
+  // BingX perpetual format: BTC-USDC (primary) ou BTC-USDT (legacy).
   if (symbol.includes("-")) return symbol;
-  if (symbol === "BTCUSDT") return "BTC-USDT";
-  if (symbol === "ETHUSDT") return "ETH-USDT";
-  return symbol.replace("USDT", "-USDT");
+  if (symbol.endsWith("USDC")) return symbol.slice(0, -4) + "-USDC";
+  if (symbol.endsWith("USDT")) return symbol.slice(0, -4) + "-USDT";
+  return symbol;
 }

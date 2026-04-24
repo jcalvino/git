@@ -85,8 +85,25 @@ export function TradeHistory({ trades = [] }) {
                         : "hover:bg-card/50"
                     }`}
                   >
-                    <td className="py-2 pr-3 text-muted whitespace-nowrap">
-                      {new Date(t.opened_at).toLocaleDateString("pt-BR")}
+                    <td className="py-2 pr-3 text-muted whitespace-nowrap font-mono text-xs">
+                      {(() => {
+                        const d = new Date(t.opened_at);
+                        const date = d.toLocaleDateString("pt-BR", {
+                          day: "2-digit",
+                          month: "2-digit",
+                          year: "2-digit",
+                        });
+                        const time = d.toLocaleTimeString("pt-BR", {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        });
+                        return (
+                          <>
+                            <div>{date}</div>
+                            <div className="text-muted/60 text-[10px]">{time}</div>
+                          </>
+                        );
+                      })()}
                     </td>
                     <td className="py-2 pr-3 font-medium">{t.symbol}</td>
                     <td className="py-2 pr-3 text-muted truncate max-w-[120px]" title={t.setup_name ?? ""}>

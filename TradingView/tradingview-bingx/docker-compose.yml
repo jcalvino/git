@@ -1,0 +1,46 @@
+# ─────────────────────────────────────────────────────────────────
+#  docker-compose — traz todo o stack em um comando, em qualquer OS.
+#
+#  Requisitos no host:
+#    - Docker Desktop (Win/Mac) ou Docker Engine (Linux)
+#    - Nada mais. Sem Node, sem npm, sem instalar deps.
+#
+#  Uso:
+#    docker compose up -d          # sobe em background
+#    docker compose logs -f app    # stream logs
+#    docker compose down           # para e remove
+#    docker compose restart app    # reinicia só o app
+#
+#  Dados persistem em ./data/ no host (DB SQLite, logs, state).
+# ─────────────────────────────────────────────────────────────────
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tradingview-bingx:latest
+    container_name: tradingview-bingx
+    restart: unless-stopped
+
+    # Lê variáveis do .env no host (não vai para a imagem)
+    env_file:
+      - .env
+
+    ports:
+      - "3000:3000"   # dashboard
+      - "3001:3001"   # REST API
+
+    volumes:
+      # Persistência: banco + logs + state
+      - ./data:/app/data
+      # Estratégia editável sem rebuild
+      - ./rules.json:/app/rules.json:ro
+      - ./monitors.json:/app/monitors.json:ro
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3001/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

@@ -9,6 +9,7 @@ import { fileURLToPath } from "url";
 import {
   getPendingSignals,
   getRecentSignals,
+  getBelowThresholdSignals,
   getTradeHistory,
   getOpenTrades,
   getOpenPositions,
@@ -31,7 +32,6 @@ import {
 import { executeSignal, closeTrade } from "../bot/executor.js";
 import { monitorOnce } from "../bot/monitor.js";
 import { getBalance, getPrice, getPositions, getOpenOrders, placeOrder } from "../exchanges/bingx.js";
-import { getCoinMPositions, getCoinMOpenOrders, getCoinMBalance, isCoinMEnabled } from "../exchanges/bingx_coinm.js";
 import config from "../config/index.js";
 import { lastScanSummary } from "../bot/scanner.js";
 import { expireStalePendingSignals } from "../bot/signal_expiry.js";
@@ -42,6 +42,8 @@ import { getSTHRealizedPrice, getSTHProximityHistory } from "../analysis/sth_pri
 import { getMonitorStatus } from "../analysis/price_monitors.js";
 import { getMarketMetrics, refreshMarketMetrics } from "../analysis/market_metrics.js";
 import { repairMissingSLTP } from "../bot/sl_tp_repair.js";
+import { analyzeTrendlines } from "../analysis/trendlines.js";
+import { createBinanceAdapter } from "../analysis/technical.js";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { resolve, dirname } from "path";
 
@@ -66,8 +68,8 @@ app.get("/api/health", (_req, res) => {
 // ── Dashboard Overview ─────────────────────────────────────────
 app.get("/api/overview", async (_req, res) => {
   try {
-    const priceSymbols = ["BTC-USDT", "ETH-USDT", "XAU-USDT"];
-    const priceKeys    = ["BTCUSDT",  "ETHUSDT",  "XAUUSDT"];
+    const priceSymbols = ["BTC-USDC", "ETH-USDC"];
+    const priceKeys    = ["BTCUSDC",  "ETHUSDC"];
 
     const [stats, snapshots, openTrades, ...priceResults] =
       await Promise.allSettled([
@@ -77,14 +79,9 @@ app.get("/api/overview", async (_req, res) => {
         ...priceSymbols.map((s) => getPrice(s)),
       ]);
 
-    // USDT-M balance
+    // USDC-M futures balance
     let balance = { available: config.capitalUsdt, total: config.capitalUsdt, unrealizedPnl: 0 };
     try { balance = await getBalance(); } catch { /* paper mode */ }
-
-    // Coin-M balance — always try; silently skipped if API keys are not configured.
-    // COINM_ENABLED only gates new order placement, not reading.
-    let coinMBalance = null;
-    try { coinMBalance = await getCoinMBalance(); } catch { /* API not configured or unavailable */ }
 
     const prices = {};
     priceKeys.forEach((key, i) => {
@@ -93,7 +90,6 @@ app.get("/api/overview", async (_req, res) => {
 
     res.json({
       balance,
-      coinMBalance,
       stats:      stats.value ?? {},
       equityCurve: snapshots.value ?? [],
       openTrades: openTrades.value ?? [],
@@ -108,6 +104,13 @@ app.get("/api/overview", async (_req, res) => {
 // ── Signals ────────────────────────────────────────────────────
 app.get("/api/signals/pending", (_req, res) => {
   res.json(getPendingSignals());
+});
+
+// Watchlist tier: setups que triggeraram mas não cruzaram MIN_SCORE.
+// Dashboard usa pra tier "quase entrou" + backtest de calibração de pesos.
+app.get("/api/signals/watchlist", (req, res) => {
+  const limit = parseInt(req.query.limit ?? "50");
+  res.json(getBelowThresholdSignals(limit));
 });
 
 app.get("/api/signals", (req, res) => {
@@ -164,72 +167,49 @@ app.get("/api/positions", (_req, res) => {
   res.json(getOpenPositions());
 });
 
-// ── Shared helper: fetch + upsert all live positions (USDT-M + Coin-M) ──
-// COINM_ENABLED only gates new order placement — reading is always allowed.
+// ── Shared helper: fetch + upsert all live USDC-M positions ─────
 async function syncAllPositions() {
-  const [usdtPosRes, coinmPosRes, usdtOrdRes, coinmOrdRes] = await Promise.allSettled([
+  const [posRes, ordRes] = await Promise.allSettled([
     getPositions(),
-    getCoinMPositions(),
-    getOpenOrders(),        // all pending SL/TP orders for USDT-M
-    getCoinMOpenOrders(),   // all pending SL/TP orders for Coin-M
+    getOpenOrders(),        // all pending SL/TP orders
   ]);
 
-  if (coinmPosRes.status === "rejected") {
-    console.warn(`[SYNC] Coin-M API unavailable: ${coinmPosRes.reason?.message ?? "unknown error"}`);
-  }
-
-  const usdtOrders  = usdtOrdRes.status  === "fulfilled" ? usdtOrdRes.value  : [];
-  const coinmOrders = coinmOrdRes.status === "fulfilled" ? coinmOrdRes.value : [];
-
-  const allPositions = [
-    ...(usdtPosRes.status  === "fulfilled" ? usdtPosRes.value  : []),
-    ...(coinmPosRes.status === "fulfilled" ? coinmPosRes.value : []),
-  ];
+  const orders       = ordRes.status === "fulfilled" ? ordRes.value : [];
+  const allPositions = posRes.status === "fulfilled" ? posRes.value : [];
 
   const synced = [];
   for (const pos of allPositions) {
-    const market  = pos.market ?? "USDT-M";
-    const orders  = market === "COIN-M" ? coinmOrders : usdtOrders;
     const slTp    = extractSlTp(orders, pos.symbol, pos.side);
 
     if (pos.entryPrice === 0) {
-      console.warn(`[SYNC] ${market} ${pos.side} ${pos.symbol} — BingX returned entryPrice=0 (check /api/coinm/status for raw field names)`);
+      console.warn(`[SYNC] ${pos.side} ${pos.symbol} — BingX returned entryPrice=0`);
     }
 
     const localId = upsertBingXPosition({ ...pos, ...slTp });
-    synced.push({ symbol: pos.symbol, side: pos.side, market, localId });
+    synced.push({ symbol: pos.symbol, side: pos.side, market: "USDC-M", localId });
   }
 
   // ── Auto-close positions no longer live on BingX ──────────────
-  // Build a set of live position keys (DB symbol format + direction).
-  // Only auto-close if the relevant market's API call succeeded —
-  // never close positions just because the API temporarily failed.
+  // Only auto-close if the positions API call succeeded — never close
+  // positions just because the API temporarily failed.
   const liveKeys = new Set(
     allPositions.map((p) => `${p.symbol.replace("-", "")}:${p.side}`)
   );
+  const apiOk = posRes.status === "fulfilled";
 
   const openTrades = getOpenTrades();
 
   // 1. EXTERNAL trades (created by sync from BingX positions opened manually)
   for (const t of openTrades.filter((t) => t.trade_type === "EXTERNAL")) {
-    const isCoinM  = !t.symbol.endsWith("USDT");
-    const marketOk = isCoinM
-      ? coinmPosRes.status === "fulfilled"
-      : usdtPosRes.status === "fulfilled";
-    if (marketOk && !liveKeys.has(`${t.symbol}:${t.direction}`)) {
+    if (apiOk && !liveKeys.has(`${t.symbol}:${t.direction}`)) {
       closeExternalTrade(t.id);
       console.log(`[SYNC] Auto-closed external #${t.id} ${t.direction} ${t.symbol} — not on BingX`);
     }
   }
 
-  // 2. Bot-created trades (scanner/executor opened them) — close if no longer on BingX.
-  //    This handles SL/TP hits that monitor.js may have missed.
+  // 2. Bot-created trades — close if no longer on BingX (SL/TP may have hit).
   for (const t of openTrades.filter((t) => t.trade_type !== "EXTERNAL")) {
-    const isCoinM  = !t.symbol.endsWith("USDT");
-    const marketOk = isCoinM
-      ? coinmPosRes.status === "fulfilled"
-      : usdtPosRes.status === "fulfilled";
-    if (marketOk && !liveKeys.has(`${t.symbol}:${t.direction}`)) {
+    if (apiOk && !liveKeys.has(`${t.symbol}:${t.direction}`)) {
       closeBotTradeFromSync(t.id);
       console.log(`[SYNC] Auto-closed bot trade #${t.id} ${t.direction} ${t.symbol} — SL/TP likely hit on BingX`);
     }
@@ -243,7 +223,7 @@ async function syncAllPositions() {
  * for a specific position (matched by symbol + positionSide direction).
  *
  * @param {object[]} orders   - raw open orders from BingX API
- * @param {string}   symbol   - BingX format: "BTC-USDT" or "BTC-USD"
+ * @param {string}   symbol   - BingX format: "BTC-USDC"
  * @param {string}   direction - "LONG" | "SHORT"
  */
 function extractSlTp(orders, symbol, direction) {
@@ -285,7 +265,7 @@ function extractSlTp(orders, symbol, direction) {
   };
 }
 
-// Sync live BingX positions (USDT-M + Coin-M) into local DB
+// Sync live BingX USDC-M positions into local DB
 app.post("/api/positions/sync", async (_req, res) => {
   try {
     const synced = await syncAllPositions();
@@ -302,7 +282,11 @@ app.post("/api/positions/close", async (req, res) => {
     return res.status(400).json({ success: false, error: "symbol, direction, size required" });
   }
   try {
-    const bingxSymbol = symbol.includes("-") ? symbol : symbol.replace("USDT", "-USDT");
+    const bingxSymbol = symbol.includes("-")
+      ? symbol
+      : symbol.endsWith("USDC")
+        ? symbol.replace("USDC", "-USDC")
+        : symbol.replace("USDT", "-USDT"); // legacy fallback
     const closeSide = direction === "LONG" ? "SELL" : "BUY";
     // Hedge mode: close by specifying closeSide + positionSide — do NOT send reduceOnly
     const result = await placeOrder({
@@ -355,52 +339,6 @@ app.get("/api/signals/last-scan", (_req, res) => {
     runAt: null,
     message: "Nenhum scan executado ainda. Execute: npm run scan",
     results: [],
-  });
-});
-
-// ── Coin-M Diagnostics ─────────────────────────────────────────
-// GET /api/coinm/status — shows whether Coin-M API is reachable and
-// what positions/balance are returned. Use this to debug API key
-// permission issues without restarting the server.
-app.get("/api/coinm/status", async (_req, res) => {
-  const [balRes, posRes, rawPosRes] = await Promise.allSettled([
-    getCoinMBalance(),
-    getCoinMPositions(),
-    // Raw positions — shows actual API field names for debugging
-    (async () => {
-      const { createHmac } = await import("crypto");
-      const https = await import("https");
-      // Re-use same auth logic inline for raw dump
-      return new Promise((resolve) => {
-        const ts  = Date.now().toString();
-        const key = config.bingx.apiKey;
-        const sec = config.bingx.secretKey;
-        if (!key || !sec) return resolve({ error: "API keys not configured" });
-        const params = { timestamp: ts };
-        const sorted = Object.keys(params).sort().map((k) => `${k}=${params[k]}`).join("&");
-        const sig = createHmac("sha256", sec).update(sorted).digest("hex");
-        const qs  = `timestamp=${ts}&signature=${sig}`;
-        const opts = {
-          hostname: "open-api.bingx.com",
-          path:     `/openApi/cswap/v1/user/positions?${qs}`,
-          method:   "GET",
-          headers:  { "X-BX-APIKEY": key, "Content-Type": "application/json" },
-        };
-        const req = https.default.request(opts, (r) => {
-          let d = "";
-          r.on("data", (c) => (d += c));
-          r.on("end", () => { try { resolve(JSON.parse(d)); } catch { resolve({ raw: d.slice(0, 500) }); } });
-        });
-        req.on("error", (e) => resolve({ error: e.message }));
-        req.end();
-      });
-    })(),
-  ]);
-  res.json({
-    enabled:      isCoinMEnabled(),
-    balance:      balRes.status  === "fulfilled" ? balRes.value  : { error: balRes.reason?.message },
-    positions:    posRes.status  === "fulfilled" ? posRes.value  : { error: posRes.reason?.message },
-    rawPositions: rawPosRes.status === "fulfilled" ? rawPosRes.value : { error: rawPosRes.reason?.message },
   });
 });
 
@@ -582,6 +520,41 @@ app.post("/api/market-metrics/refresh", async (_req, res) => {
   }
 });
 
+// ── Trendlines (LTA/LTB) ───────────────────────────────────────
+// Módulo isolado, não integrado ao scoring ainda.
+// Serve pro dashboard visualizar as linhas e validar visualmente
+// antes de plugar em signals.js.
+//
+// Query params:
+//   timeframe=240 (default H4). Aceita: 15,30,60,240,D,W
+//
+// Cache de 60s por (symbol, timeframe) pra não bater API a cada refresh.
+const _trendlinesCache = new Map(); // `${sym}|${tf}` → { data, fetchedAt }
+const TRENDLINES_TTL_MS = 60 * 1000;
+
+app.get("/api/trendlines/:symbol", async (req, res) => {
+  try {
+    const symbol    = req.params.symbol;
+    const timeframe = req.query.timeframe ?? "240";
+    const cacheKey  = `${symbol}|${timeframe}`;
+    const noCache   = req.query.fresh === "1";
+
+    if (!noCache) {
+      const cached = _trendlinesCache.get(cacheKey);
+      if (cached && Date.now() - cached.fetchedAt < TRENDLINES_TTL_MS) {
+        return res.json({ ...cached.data, cached: true, cachedAgeMs: Date.now() - cached.fetchedAt });
+      }
+    }
+
+    const adapter = createBinanceAdapter();
+    const data    = await analyzeTrendlines(symbol, adapter, { timeframe });
+    _trendlinesCache.set(cacheKey, { data, fetchedAt: Date.now() });
+    res.json({ ...data, cached: false });
+  } catch (err) {
+    res.status(500).json({ error: err.message, symbol: req.params.symbol });
+  }
+});
+
 // ── Admin ──────────────────────────────────────────────────────
 // DELETE all closed/stopped trade records (keeps open positions).
 // Used by the dashboard "Clear History" button.
@@ -643,14 +616,9 @@ app.post("/api/knowledge-base", (req, res) => {
   }
 });
 
-// ── Start ──────────────────────────────────────────────────────
-const isMain = process.argv[1] === fileURLToPath(import.meta.url);
-if (isMain) {
-  app.listen(config.apiPort, () => {
-    console.log(`API server running at http://localhost:${config.apiPort}`);
-    console.log(`Mode: ${config.paperTrade ? "PAPER TRADE" : "LIVE"}`);
-    console.log(`Dashboard: http://localhost:${config.dashboardPort}`);
-  });
-
-  //
-}
+// ── Bootstrap ───────────────────────────────────────────────────
+const PORT = parseInt(process.env.API_PORT ?? "3001", 10);
+app.listen(PORT, () => {
+  console.log(`[API] Server listening on http://localhost:${PORT}`);
+  console.log(`[API] Mode: ${config.paperTrade ? "PAPER" : "LIVE"}  |  Capital: $${config.capitalUsdt}`);
+});

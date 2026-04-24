@@ -14,7 +14,9 @@ import { fileURLToPath } from "url";
 import { analyzeOnChain } from "../analysis/onchain.js";
 import { analyzeOrderBook } from "../analysis/orderbook.js";
 import { analyzeMacro } from "../analysis/macro.js";
-import { evaluateSetups } from "./setups.js";
+import { analyzeTrendlines } from "../analysis/trendlines.js";
+import { createBinanceAdapter } from "../analysis/technical.js";
+import { evaluateSetups, evaluateSetupsDetailed } from "./setups.js";
 import { calculateLevels, calculatePositionSize } from "./fibonacci.js";
 import { calcScaleEntries } from "./risk.js";
 import config from "../config/index.js";
@@ -24,7 +26,7 @@ import { STRATEGY } from "../config/strategy.js";
  * Generate a trade signal for a symbol.
  * Evaluates all 5 setups and returns the highest-confidence triggered one.
  *
- * @param {string} symbol            — e.g. "BTCUSDT"
+ * @param {string} symbol            — e.g. "BTCUSDC"
  * @param {object} technicalAnalysis — result from analyzeTechnical()
  * @param {object} [macroCache]      — reuse macro analysis across symbols
  * @returns {Signal|null}            — null if no setup triggered above MIN_SCORE
@@ -32,29 +34,75 @@ import { STRATEGY } from "../config/strategy.js";
 export async function generateSignal(symbol, technicalAnalysis, macroCache = null) {
   const price = technicalAnalysis.price;
 
-  // Fetch supporting data in parallel
-  const [onChain, macro] = await Promise.all([
+  // Fetch supporting data in parallel.
+  // Trendlines roda em DOIS timeframes:
+  //   • D  → primário (decisão Julio 2026-04-23)
+  //   • H4 → secundário com base de confidence menor, pra capturar trigger
+  //         antes da diária amadurecer. Só dispara se modifiers confirmarem.
+  //
+  // IMPORTANTE: createBinanceAdapter() tem estado (symbol/interval) — dois
+  // analyzeTrendlines() em paralelo no mesmo adapter se sobreescrevem.
+  // Por isso criamos um adapter por chamada.
+  const adapterD  = createBinanceAdapter();
+  const adapterH4 = createBinanceAdapter();
+
+  const [
+    onChainRes,
+    macroRes,
+    orderbookRes,
+    trendlinesDailyRes,
+    trendlinesH4Res,
+  ] = await Promise.allSettled([
     analyzeOnChain(symbol),
     macroCache ? Promise.resolve(macroCache) : analyzeMacro(),
+    analyzeOrderBook(symbol),
+    analyzeTrendlines(symbol, adapterD,  { timeframe: "D"   }),
+    analyzeTrendlines(symbol, adapterH4, { timeframe: "240" }),
   ]);
 
-  // Evaluate all setups (includes STH, liquidation, OI filter internally)
-  const triggeredSetups = await evaluateSetups(symbol, technicalAnalysis, onChain);
+  const onChain   = onChainRes.status   === "fulfilled" ? onChainRes.value   : null;
+  const macro     = macroRes.status     === "fulfilled" ? macroRes.value     : null;
+  const orderbook = orderbookRes.status === "fulfilled" ? orderbookRes.value : null;
+  const trendlines = {
+    D:   trendlinesDailyRes.status === "fulfilled" ? trendlinesDailyRes.value : null,
+    "240": trendlinesH4Res.status  === "fulfilled" ? trendlinesH4Res.value    : null,
+  };
+
+  // Evaluate all registered setups with full context.
+  // Rodamos o "detailed" uma vez e derivamos os triggered dele — assim a gente
+  // já tem o motivo do skip em mãos pro _noSignal quando nada disparar.
+  const allResults = await evaluateSetupsDetailed(
+    symbol,
+    technicalAnalysis,
+    onChain,
+    macro,
+    orderbook,
+    trendlines,
+  );
+  const triggeredSetups = allResults
+    .filter((r) => r?.triggered)
+    .sort((a, b) => b.confidence - a.confidence);
 
   if (!triggeredSetups.length) {
-    return _noSignal(symbol, price, "Nenhum dos 5 setups ativado neste momento");
+    // Extrai o primeiro motivo de skip concreto (ignorando os genéricos)
+    const firstReason = allResults
+      .map((r) => r?.rationale?.[0])
+      .find((msg) => msg && msg.length > 0);
+    const msg = firstReason
+      ? `Nenhum setup ativado — ${firstReason}`
+      : "Nenhum setup ativado neste momento";
+    return _noSignal(symbol, price, msg);
   }
 
   // Pick the highest-confidence setup
   const best = triggeredSetups[0];
 
-  if (best.confidence < STRATEGY.MIN_SCORE) {
-    return _noSignal(
-      symbol,
-      price,
-      `Setup "${best.setup_name}" com confiança ${best.confidence}% abaixo do mínimo (${STRATEGY.MIN_SCORE}%)`
-    );
-  }
+  // NOTA: não retornamos mais cedo quando best.confidence < MIN_SCORE.
+  // Computamos toda a matemática (entry/SL/TPs/sizing) mesmo assim,
+  // pra que o signal possa ser persistido como BELOW_THRESHOLD em SQLite
+  // (schema exige NOT NULL em direction/entry/sl/tp1-3). O status final
+  // é decidido no return lá embaixo com base em MIN_SCORE.
+  const belowThreshold = best.confidence < STRATEGY.MIN_SCORE;
 
   // Per-symbol SL override (commodities need wider SL — see strategy.js)
   const slPct = STRATEGY.SYMBOL_SL_PCT?.[symbol] ?? best.sl_pct ?? STRATEGY.SL_PCT;
@@ -121,7 +169,15 @@ export async function generateSignal(symbol, technicalAnalysis, macroCache = nul
   };
 
   // Append macro + market context to rationale
-  const fullRationale = [...best.rationale];
+  // Se ficou abaixo do threshold, o headline vai primeiro pra marcar
+  // visivelmente no dashboard/scanner que este sinal é "watchlist".
+  const fullRationale = [];
+  if (belowThreshold) {
+    fullRationale.push(
+      `Setup "${best.setup_name}" com confiança ${best.confidence}% abaixo do mínimo (${STRATEGY.MIN_SCORE}%)`
+    );
+  }
+  fullRationale.push(...best.rationale);
   if (macro?.fearGreed?.value !== undefined) {
     fullRationale.push(
       `Fear & Greed: ${macro.fearGreed.value}/100 (${macro.fearGreed.classification ?? ""}) — ${_fearGreedContext(macro.fearGreed.value, best.direction)}`
@@ -225,13 +281,16 @@ export async function generateSignal(symbol, technicalAnalysis, macroCache = nul
     },
 
     createdAt: new Date().toISOString(),
-    status:    "PENDING_APPROVAL",
+    // Status final: se confiança ≥ MIN_SCORE → fila de aprovação;
+    // caso contrário → BELOW_THRESHOLD (persistido pra backtest/calibração,
+    // mas nunca executado pelo executor).
+    status:    belowThreshold ? "BELOW_THRESHOLD" : "PENDING_APPROVAL",
   };
 }
 
 // ── Helpers ────────────────────────────────────────────────────
 
-function _noSignal(symbol, price, reason) {
+function _noSignal(symbol, price, reason, extraRationale = []) {
   return {
     symbol,
     direction:  null,
@@ -240,7 +299,7 @@ function _noSignal(symbol, price, reason) {
     setup_name: null,
     leverage:   1,
     tradeType:  null,
-    rationale:  [reason],
+    rationale:  [reason, ...extraRationale],
     price,
     entry: null, sl: null, tp1: null, tp2: null, tp3: null,
     sizing: null,
@@ -268,7 +327,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   console.log("Testando signal engine com dados mock...\n");
 
   const mockTechnical = {
-    symbol: "BTCUSDT",
+    symbol: "BTCUSDC",
     price:  84500,
     timestamp: new Date().toISOString(),
     daily: {
@@ -295,7 +354,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   };
 
   try {
-    const signal = await generateSignal("BTCUSDT", mockTechnical);
+    const signal = await generateSignal("BTCUSDC", mockTechnical);
     console.log(`Symbol    : ${signal.symbol}`);
     console.log(`Setup     : ${signal.setup_name ?? "nenhum"}`);
     console.log(`Direction : ${signal.direction}`);
