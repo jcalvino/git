@@ -2,16 +2,31 @@
 #  docker-compose — traz todo o stack em um comando, em qualquer OS.
 #
 #  Requisitos no host:
-#    - Docker Desktop (Win/Mac) ou Docker Engine (Linux)
+#    - Docker Desktop (Win/Mac) ou Docker Engine (Linux).
 #    - Nada mais. Sem Node, sem npm, sem instalar deps.
 #
-#  Uso:
-#    docker compose up -d          # sobe em background
-#    docker compose logs -f app    # stream logs
-#    docker compose down           # para e remove
-#    docker compose restart app    # reinicia só o app
+#  Uso normal:
+#    npm run docker:up        # = docker compose up -d --build
+#    npm run docker:logs      # = docker compose logs -f app
+#    npm run docker:down      # = docker compose down
+#    npm run docker:reset     # = down -v + up -d --build (apaga DB)
 #
-#  Dados persistem em ./data/ no host (DB SQLite, logs, state).
+#  Atualização depois de mexer no código:
+#    npm run docker:up        # rebuilda e sobe em cima da imagem
+#                             # anterior. As camadas cacheadas
+#                             # continuam até o ponto onde algo
+#                             # mudou.
+#
+#  O que persiste entre rebuilds (bind mounts no host):
+#    ./data/         → SQLite, logs, snapshots, pids.json
+#    ./research/     → Outputs dos scripts (explain-signal,
+#                      regime-snapshot, weekly-report)
+#    ./rules.json    → Contexto macro (editável sem rebuild)
+#    ./monitors.json → Monitores de preço (editável sem rebuild)
+#
+#  O que NÃO é montado (vive dentro da imagem):
+#    src/, scripts/, skills/, dashboard/dist — mudanças exigem
+#    rebuild (`npm run docker:up`).
 # ─────────────────────────────────────────────────────────────────
 
 services:
@@ -23,18 +38,20 @@ services:
     container_name: tradingview-bingx
     restart: unless-stopped
 
-    # Lê variáveis do .env no host (não vai para a imagem)
+    # Lê variáveis do .env no host (não vai para a imagem em si).
     env_file:
       - .env
 
     ports:
-      - "3000:3000"   # dashboard
-      - "3001:3001"   # REST API
+      - "3000:3000"   # dashboard (estático + proxy /api → :3001)
+      - "3001:3001"   # REST API (exposta direto também, útil p/ debug)
 
     volumes:
-      # Persistência: banco + logs + state
+      # Persistência: banco SQLite + logs + state
       - ./data:/app/data
-      # Estratégia editável sem rebuild
+      # Outputs de scripts de research (explain-signal, snapshots, etc.)
+      - ./research:/app/research
+      # Config editável sem rebuild — o container relê a cada scan
       - ./rules.json:/app/rules.json:ro
       - ./monitors.json:/app/monitors.json:ro
 
@@ -43,4 +60,4 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 20s
+      start_period: 30s
