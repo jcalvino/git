@@ -22,6 +22,7 @@
 import { readFileSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import { readOnchainFromRules } from "./rules_helper.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RULES_PATH = resolve(__dirname, "../../rules.json");
@@ -171,14 +172,14 @@ async function _tryCoinGlass() {
 // ── Source 3: rules.json manual ───────────────────────────────
 
 function _tryRulesJson() {
-  try {
-    const rules = JSON.parse(readFileSync(RULES_PATH, "utf8"));
-    const manual = parseFloat(rules.sth_realized_price);
-    if (manual && manual > 10_000) return manual;
-  } catch {
-    // rules.json missing or key not set
-  }
-  return null;
+  // Procura em (1) top-level rules.sth_realized_price e
+  // (2) market_context_YYYY_MM_DD mais recente → analyst_inputs[].btc.onchain_metrics.{sth_cost_basis|sth_realized_price}
+  const found = readOnchainFromRules(
+    RULES_PATH,
+    ["sth_realized_price", "sth_cost_basis"],
+    { minValue: 10_000 }, // BTC price-scale sanity
+  );
+  return found?.value ?? null;
 }
 
 // ── Proximity History & Convergence ───────────────────────────

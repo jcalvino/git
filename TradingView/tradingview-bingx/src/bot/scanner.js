@@ -30,6 +30,7 @@ import { executeSignal } from "./executor.js";
 import config, { refreshCapital } from "../config/index.js";
 import { STRATEGY } from "../config/strategy.js";
 import { logError, logWarn, logInfo } from "./error_tracker.js";
+import { notify } from "./notifier.js";
 
 const SCAN_INTERVAL_MS = 300_000; // 5 minutes
 let _isScanning = false;          // lock: skip if previous run still active
@@ -219,6 +220,11 @@ async function runScan() {
 
         const signalId = saveSignal(signal);
 
+        // ── Telegram: alert user do sinal ANTES da execução ─────────
+        // Fire-and-forget — se o executor falhar, pelo menos o alerta
+        // já chegou no celular e você sabe que houve sinal.
+        notify.signal({ ...signal, id: signalId }).catch(() => {});
+
         // Re-check daily limit (another symbol in this cycle may have filled a trade)
         if (isDailyLimitReached(liveCapital, STRATEGY.DAILY_RISK_PCT)) {
           updateSignalStatus(signalId, "REJECTED");
@@ -254,6 +260,7 @@ async function runScan() {
           const monitorSignals = checkPriceMonitors(symbol, technical, liveCapital);
           for (const monSig of monitorSignals) {
             const monSignalId = saveSignal(monSig);
+            notify.signal({ ...monSig, id: monSignalId }).catch(() => {});
 
             // Re-check daily limit before executing each monitor signal
             if (isDailyLimitReached(liveCapital, STRATEGY.DAILY_RISK_PCT)) {
@@ -380,6 +387,9 @@ if (isMain) {
     console.log(`Interval : every ${SCAN_INTERVAL_MS / 1000}s / ${SCAN_INTERVAL_MS / 60000}min (skips if previous run active)`);
     console.log(`Mode     : ${config.paperTrade ? "PAPER TRADE" : "LIVE"}`);
     console.log(`Symbols  : ${STRATEGY.SYMBOLS.join(", ")}\n`);
+
+    // Ping no Telegram que o scanner subiu (só se TELEGRAM_ENABLED=true).
+    notify.startup(`Scanner (${config.paperTrade ? "PAPER" : "LIVE"})`).catch(() => {});
 
     // Run immediately, then on interval
     await runScanWithLock();

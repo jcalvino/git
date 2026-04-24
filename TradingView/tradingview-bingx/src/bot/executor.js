@@ -10,6 +10,7 @@ import { analyzeMacro } from "../analysis/macro.js";
 import { logError, logWarn, logInfo } from "./error_tracker.js";
 import config from "../config/index.js";
 import { STRATEGY } from "../config/strategy.js";
+import { notify } from "./notifier.js";
 
 /**
  * Execute a trade from an approved signal.
@@ -262,6 +263,21 @@ export async function executeSignal(signalId) {
     `  Mode: ${config.paperTrade ? "PAPER" : "LIVE"}`
   );
 
+  // ── Telegram: trade aberto com sucesso ──────────────────────────
+  // Fire-and-forget — telegram offline não pode abortar o executor.
+  notify.tradeOpened({
+    id: tradeId,
+    symbol: signal.symbol,
+    direction: signal.direction,
+    entry_price: avgEntry,
+    size: signal.position_size,
+    sl_price: signal.sl,
+    tp1_price: signal.tp1,
+    tp2_price: signal.tp2,
+    tp3_price: signal.tp3,
+    paper_trade: config.paperTrade ? 1 : 0,
+  }).catch(() => {});
+
   return { success: true, tradeId, scaleOrders, slTpResult };
 }
 
@@ -302,6 +318,22 @@ export async function closeTrade(tradeId, reason = "MANUAL") {
     `[EXECUTOR] Trade #${tradeId} closed: ${reason}\n` +
       `  Exit: $${exitPrice.toLocaleString()} | P&L: $${closeResult.pnl.toFixed(2)} (${closeResult.pnlPct.toFixed(2)}%)`
   );
+
+  // ── Telegram: trade fechado (manual, PANIC, ou qualquer reason
+  // passada a closeTrade que não seja SL/TP — esses são cobertos
+  // pelo monitor.js que tem o preço corrente na mão).
+  notify.tradeClosed(
+    {
+      id: tradeId,
+      symbol: trade.symbol,
+      direction: trade.direction,
+      exit_price: exitPrice,
+      pnl_pct: closeResult.pnlPct != null ? closeResult.pnlPct / 100 : null,
+    },
+    reason,
+    closeResult.pnl,
+    false,
+  ).catch(() => {});
 
   return { success: true, ...closeResult };
 }

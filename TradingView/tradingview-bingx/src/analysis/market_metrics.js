@@ -19,6 +19,9 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { getFundingRate } from "../exchanges/bingx.js";
 import { getSTHRealizedPrice } from "./sth_price.js";
+import { getLTHRealizedPrice } from "./lth_price.js";
+import { readOnchainFromRules } from "./rules_helper.js";
+import { saveOnchainSnapshot } from "../storage/trades.js";
 
 const __dirname  = dirname(fileURLToPath(import.meta.url));
 const ROOT       = resolve(__dirname, "../..");
@@ -51,6 +54,34 @@ function saveCache(data) {
 function readRulesJson() {
   try { return JSON.parse(readFileSync(RULES_PATH, "utf8")); }
   catch { return {}; }
+}
+
+// ── BTC spot price — fallback para o caller que não passar ────
+async function _fetchBtcPrice() {
+  try {
+    const res = await fetch(
+      "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDC",
+      { signal: AbortSignal.timeout(4000), headers: { Accept: "application/json" } }
+    );
+    if (!res.ok) return null;
+    const json = await res.json();
+    const p = parseFloat(json?.price);
+    return isNaN(p) ? null : p;
+  } catch { return null; }
+}
+
+// ── ETH spot price (mesmo pattern) ────────────────────────────
+async function _fetchEthPrice() {
+  try {
+    const res = await fetch(
+      "https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDC",
+      { signal: AbortSignal.timeout(4000), headers: { Accept: "application/json" } }
+    );
+    if (!res.ok) return null;
+    const json = await res.json();
+    const p = parseFloat(json?.price);
+    return isNaN(p) ? null : p;
+  } catch { return null; }
 }
 
 // ── BTC Dominance — CoinGecko (free, no API key) ──────────────
@@ -103,9 +134,9 @@ async function _fetchRealizedPrice() {
     } catch { /* try next */ }
   }
 
-  // Fallback: manual entry in rules.json
-  const v = parseFloat(readRulesJson().realized_price);
-  return v > 0 ? v : null;
+  // Fallback: rules.json — top-level OR analyst_inputs[].btc.onchain_metrics
+  const found = readOnchainFromRules(RULES_PATH, ["realized_price"]);
+  return found?.value ?? null;
 }
 
 // ── CVDD — bitcoinmagazinepro → rules.json ─────────────────────
@@ -131,9 +162,10 @@ async function _fetchCvdd() {
     } catch { /* try next */ }
   }
 
-  // Manual fallback — add to rules.json: { "cvdd": 25000 }
-  const v = parseFloat(readRulesJson().cvdd);
-  return v > 0 ? v : null;
+  // Fallback: rules.json — top-level "cvdd" OR analyst_inputs[].btc.onchain_metrics.cvdd
+  // OU analyst_inputs[].btc.onchain_metrics.cycle_floor_projection.low (range, ver helper)
+  const found = readOnchainFromRules(RULES_PATH, ["cvdd"]);
+  return found?.value ?? null;
 }
 
 // ── Deep value extractor ───────────────────────────────────────
@@ -167,13 +199,19 @@ function _extractPrice(obj, keys) {
  * @returns {Promise<MarketMetrics>}
  */
 export async function refreshMarketMetrics(btcPrice = null) {
-  const [dominanceRes, fundingRes, realizedRes, cvddRes, sthRes] =
+  // Se o caller não passou preço, busca direto da Binance.
+  // Necessário pra calcular MVRV e persistir snapshot consistente.
+  if (!btcPrice) btcPrice = await _fetchBtcPrice();
+  const ethPrice = await _fetchEthPrice();
+
+  const [dominanceRes, fundingRes, realizedRes, cvddRes, sthRes, lthRes] =
     await Promise.allSettled([
       _fetchBtcDominance(),
       _fetchFundingRates(),
       _fetchRealizedPrice(),
       _fetchCvdd(),
       getSTHRealizedPrice(btcPrice),
+      getLTHRealizedPrice(),
     ]);
 
   // Funding rate signal helper
@@ -186,6 +224,14 @@ export async function refreshMarketMetrics(btcPrice = null) {
 
   const funding = fundingRes.status === "fulfilled" ? fundingRes.value : { btc: null, eth: null };
   const sth     = sthRes.status     === "fulfilled" ? sthRes.value     : null;
+  const lth     = lthRes.status     === "fulfilled" ? lthRes.value     : null;
+
+  const realizedPrice = realizedRes.status === "fulfilled" ? realizedRes.value : null;
+  const cvdd          = cvddRes.status     === "fulfilled" ? cvddRes.value     : null;
+
+  // MVRV simples (price/realizedPrice) — proxy de Market Cap / Realized Cap.
+  // Aproxima bem pra BTC, suficiente pra correlação observacional pós-B.
+  const mvrvBtc = (btcPrice && realizedPrice) ? (btcPrice / realizedPrice) : null;
 
   const metrics = {
     btcDominance:     dominanceRes.status === "fulfilled" ? dominanceRes.value    : null,
@@ -203,8 +249,9 @@ export async function refreshMarketMetrics(btcPrice = null) {
         nextTime:   funding.eth.nextFundingTime,
       } : null,
     },
-    realizedPrice:    realizedRes.status === "fulfilled" ? realizedRes.value : null,
-    cvdd:             cvddRes.status     === "fulfilled" ? cvddRes.value     : null,
+    realizedPrice,
+    cvdd,
+    mvrv: mvrvBtc,
     sth: sth ? {
       price:           sth.price,
       source:          sth.source,
@@ -214,14 +261,63 @@ export async function refreshMarketMetrics(btcPrice = null) {
       isConverging:    sth.isConverging,
       convergenceStatus: sth.convergenceStatus,
     } : null,
+    lth: lth ? {
+      price:  lth.price,
+      source: lth.source,
+    } : null,
   };
 
   saveCache(metrics);
+
+  // ── Persistência no DB (observability — não afeta scoring) ────
+  // Grava 1 row por símbolo. ETH não tem on-chain proprietário ainda
+  // (bitcoin-data.com é só BTC), mas captura preço + funding + MVRV
+  // = null pra coerência de schema; quando integrar CoinMetrics,
+  // ETH ganha métricas próprias sem mudar a tabela.
+  try {
+    const capturedAt = new Date().toISOString();
+    if (btcPrice) {
+      saveOnchainSnapshot({
+        symbol:         "BTCUSDC",
+        price:          btcPrice,
+        mvrv:           mvrvBtc,
+        realized_price: realizedPrice,
+        sth_rp:         sth?.price ?? null,
+        lth_rp:         lth?.price ?? null,
+        cvdd:           cvdd,
+        funding_rate:   funding.btc?.fundingRate ?? null,
+        sources: {
+          realized: realizedPrice ? "market_metrics" : null,
+          sth:      sth?.source ?? null,
+          lth:      lth?.source ?? null,
+          mvrv:     mvrvBtc ? "computed (price/realized)" : null,
+        },
+        captured_at: capturedAt,
+      });
+    }
+    // ETH: por enquanto só price + funding (on-chain integra depois com CoinMetrics)
+    saveOnchainSnapshot({
+      symbol:       "ETHUSDC",
+      price:        ethPrice,
+      funding_rate: funding.eth?.fundingRate ?? null,
+      sources: {
+        funding: funding.eth ? "bingx" : null,
+        note:    "ETH on-chain pending CoinMetrics integration",
+      },
+      captured_at: capturedAt,
+    });
+  } catch (err) {
+    // DB opcional — never break scan se falhar
+    console.warn(`[METRICS] saveOnchainSnapshot falhou: ${err.message}`);
+  }
+
   console.log(
     `[METRICS] BTC Dom: ${metrics.btcDominance ?? "—"}% | ` +
     `BTC Fund: ${metrics.funding.btc?.ratePct ?? "—"}% | ` +
     `ETH Fund: ${metrics.funding.eth?.ratePct ?? "—"}% | ` +
+    `MVRV: ${mvrvBtc ? mvrvBtc.toFixed(2) : "—"} | ` +
     `STH: $${metrics.sth?.price?.toLocaleString() ?? "—"} | ` +
+    `LTH: $${metrics.lth?.price?.toLocaleString() ?? "—"} | ` +
     `Realized: $${metrics.realizedPrice?.toLocaleString() ?? "—"} | ` +
     `CVDD: $${metrics.cvdd?.toLocaleString() ?? "—"}`
   );
