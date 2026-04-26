@@ -11,7 +11,7 @@ Node ou dependências no host.
 ## Roda em 2 comandos (qualquer OS)
 
 ```bash
-cp .env.example .env    # preencha API keys + wallet de withdraw
+cp .env.example .env    # preencha API keys
 docker compose up -d
 ```
 
@@ -23,7 +23,7 @@ Dashboard fica em `http://localhost:3000`, API em `http://localhost:3001`.
 src/
   analysis/       leitura de mercado (técnica, on-chain, orderbook, macro)
   strategy/       setups, risk, fibonacci, signals (vazio após reset 04/23)
-  exchanges/      bingx.js (USDC-M futures) + withdraw.js (USDC → BASE)
+  exchanges/      bingx.js (USDC-M futures)
   bot/            scanner, monitor, executor
   api/            Express :3001
   config/         strategy.js (parâmetros), index.js (.env loader)
@@ -40,7 +40,7 @@ scripts/          start, stop, restart, reset-stack, docker-start, …
 | [technical-analysis](skills/technical-analysis/SKILL.md) | "Analise BTC agora" |
 | [risk-management](skills/risk-management/SKILL.md) | "Quanto posso arriscar?" |
 | [setup-detector](skills/setup-detector/SKILL.md) | "Existe setup aparecendo?" |
-| [trade-executor](skills/trade-executor/SKILL.md) | "Aprove o sinal" / "withdraw lucro" |
+| [trade-executor](skills/trade-executor/SKILL.md) | "Aprove o sinal" |
 
 ## Modos de operação
 
@@ -48,40 +48,14 @@ scripts/          start, stop, restart, reset-stack, docker-start, …
 |---|---|
 | **Paper** (simula) | `PAPER_TRADE=true` |
 | **Live** | `PAPER_TRADE=false` + BingX API keys válidas |
-| **Auto-withdraw dry-run** | `AUTO_WITHDRAW_ENABLED=true` + `WITHDRAW_DRY_RUN=true` |
-| **Auto-withdraw live** | `AUTO_WITHDRAW_ENABLED=true` + `WITHDRAW_DRY_RUN=false` + whitelist BingX feito |
 
-## Auto-withdraw
+## Saques
 
-Ao fechar um trade USDC-M com P&L > 0:
-
-1. Transfere USDC de Perpetual Futures → Fund/Main
-2. Saca USDC direto para a carteira configurada na rede **BASE**
-
-Não há mais swap USDT→USDC: os trades já são liquidados em USDC, então
-o lucro sai direto para a wallet externa.
-
-Destino (configurável em `.env`):
-- `WITHDRAW_WALLET_ADDRESS=0xD211b268fc17556C0cF8540938CE5C61f0E18E90`
-- `WITHDRAW_NETWORK=BASE`
-
-### Arquitetura de keys (menor privilégio)
-
-O projeto usa **duas API keys separadas** na BingX:
-
-- **Trade key** (`BINGX_API_KEY`/`BINGX_SECRET_KEY`) — Futures Read + Trade. Sem Withdraw.
-- **Withdraw key** (`BINGX_WITHDRAW_API_KEY`/`BINGX_WITHDRAW_SECRET_KEY`) — Withdraw + Internal Transfer. Sem Trade.
-
-Se a trade key vazar, o atacante não saca fundos. A withdraw key fica
-em branco enquanto `AUTO_WITHDRAW_ENABLED=false`.
-
-### Antes de ligar em produção
-
-1. Adicionar `0xD211…8E90` na whitelist BingX para BASE
-2. Gerar **duas** API keys separadas (trade e withdraw)
-3. Preencher `BINGX_WITHDRAW_API_KEY` / `BINGX_WITHDRAW_SECRET_KEY` no `.env`
-4. Rodar em `WITHDRAW_DRY_RUN=true` por ≥3 trades lucrativos
-5. Validar logs, depois flipar para `false`
+Saques de lucro são **manuais**. Quando você quiser realizar lucro
+acumulado: console BingX → Wallet → Withdraw → escolhe rede e endereço.
+O bot não move USDC pra fora — a API key dele só tem permissão de Trade,
+não de Withdraw, por princípio de menor privilégio. Se a key vazar, o
+atacante não consegue sacar nada.
 
 ## Comandos úteis
 

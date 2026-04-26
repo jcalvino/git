@@ -2,7 +2,7 @@
 
 Semi-automated trading system for BTC and ETH on BingX USDC-M Perpetual Futures.
 Capital: ~$1100 USDC | Risk: 1% of total / 20% per slot | TPs: Fibonacci distribution | No leverage (1x).
-Todos os trades são liquidados em USDC. Auto-withdraw (opt-in) manda USDC direto do PERP → Fund/Main → wallet externa na rede BASE.
+Todos os trades são liquidados em USDC. Saques são manuais (sem auto-withdraw): a key da BingX só tem permissão Futures Read + Trade.
 
 ## Architecture
 

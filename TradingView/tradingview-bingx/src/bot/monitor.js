@@ -12,31 +12,14 @@ import {
   updatePosition,
   recordPartialClose,
   closeTrade,
-  getTotalTradePnl,
   upsertBingXPosition,
   updateTradeStopLoss,
 } from "../storage/trades.js";
 import { placeOrder, getOpenOrders, cancelOrder } from "../exchanges/bingx.js";
-import { onTradeClosedWithProfit } from "../exchanges/withdraw.js";
 import { shouldMoveStopLoss } from "../strategy/risk.js";
 import config, { refreshCapital } from "../config/index.js";
 import { STRATEGY } from "../config/strategy.js";
 import { notify } from "./notifier.js";
-
-/**
- * Após qualquer `closeTrade(...)`, checa o P&L total do trade e,
- * se positivo, dispara o fluxo de auto-withdraw. No-op se
- * AUTO_WITHDRAW_ENABLED=false ou PAPER_TRADE=true.
- */
-async function _maybeWithdrawProfit(tradeId, symbol) {
-  try {
-    const totalPnl = getTotalTradePnl(tradeId);
-    if (totalPnl <= 0) return;
-    await onTradeClosedWithProfit({ symbol, pnl_usdt: totalPnl });
-  } catch (err) {
-    console.error(`[MONITOR] withdraw hook falhou (trade #${tradeId}): ${err.message}`);
-  }
-}
 
 const POLL_INTERVAL_MS = 30_000; // 30 seconds
 
@@ -191,7 +174,6 @@ async function checkTrade(trade, currentPrice) {
         tp3Pnl,
         false,
       ).catch(() => {});
-      await _maybeWithdrawProfit(trade.id, trade.symbol);
       actions.push({ type: "TP3", trade: trade.id, price: currentPrice });
     }
   }
@@ -293,7 +275,6 @@ async function executeTpOrSl(trade, type, price, size) {
     console.log(`  [PAPER] Would place reduce order: ${type} ${size} @ $${price}`);
     if (type === "SL" || type === "TP3") {
       closeTrade(trade.id, price, type);
-      await _maybeWithdrawProfit(trade.id, trade.symbol);
     }
     return;
   }
@@ -311,7 +292,6 @@ async function executeTpOrSl(trade, type, price, size) {
     });
     if (type === "SL" || type === "TP3") {
       closeTrade(trade.id, price, type);
-      await _maybeWithdrawProfit(trade.id, trade.symbol);
     }
   } catch (err) {
     // 101205 = "No position to close" — BingX already closed it via its own SL/TP order.
@@ -322,7 +302,6 @@ async function executeTpOrSl(trade, type, price, size) {
       );
       if (type === "SL" || type === "TP3") {
         closeTrade(trade.id, price, type);
-        await _maybeWithdrawProfit(trade.id, trade.symbol);
       } else {
         recordPartialClose(trade.id, type, price, size);
       }

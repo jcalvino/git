@@ -23,7 +23,6 @@
     "test:technical": "node src/analysis/technical.js",
     "test:signals": "node src/strategy/signals.js",
     "test:bingx": "node src/exchanges/bingx.js",
-    "test:withdraw": "node src/exchanges/withdraw.js",
     "validate-symbols": "node scripts/validate-symbols.js"
   },
   "dependencies": {

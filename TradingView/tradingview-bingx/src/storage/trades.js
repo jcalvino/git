@@ -648,6 +648,25 @@ export function getDailyProfit() {
 }
 
 /**
+ * Returns the cumulative realized P&L across all closed trades (lifetime).
+ * Positive = net profit, negative = net loss. Used by `refreshCapital()` in
+ * paper mode to compute the effective capital as
+ * `INITIAL_CAPITAL + getTotalRealizedPnl()` so position sizing reflects
+ * compounding from prior simulated trades.
+ *
+ * @returns {number} Sum of `pnl` for all trades with status CLOSED or STOPPED.
+ *                   0 when there are no closed trades or DB is empty.
+ */
+export function getTotalRealizedPnl() {
+  const row = db.prepare(`
+    SELECT COALESCE(SUM(pnl), 0) AS total
+    FROM trades
+    WHERE status IN ('CLOSED', 'STOPPED') AND pnl IS NOT NULL
+  `).get();
+  return row?.total ?? 0;
+}
+
+/**
  * Returns true when today's realized profit has reached the daily target.
  * @param {number} targetAmount — fixed dollar amount (e.g. 10)
  */

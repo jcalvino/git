@@ -60,15 +60,23 @@ function num(key, defaultValue) {
   return n;
 }
 
+// ── Capital inicial (snapshot, não muda em runtime) ───────────
+// Lido uma única vez do .env no boot. `refreshCapital()` usa esse
+// valor como base imutável e soma o PnL realizado (em paper) ou
+// substitui pelo saldo real da BingX (em live).
+// Aceita CAPITAL_USDC (preferido) ou CAPITAL_USDT (legacy) como fallback.
+export const INITIAL_CAPITAL = num("CAPITAL_USDC", num("CAPITAL_USDT", 200));
+
 // ── Config Export ──────────────────────────────────────────────
 export const config = {
   // Trading mode
   paperTrade: bool("PAPER_TRADE", true),
 
-  // Capital — projeto opera em USDC-M futures.
-  // Aceita CAPITAL_USDC (preferido) ou CAPITAL_USDT (legacy) como fallback.
+  // Capital efetivo em USDC. Mutável em runtime via `refreshCapital()`:
+  //   - PAPER: INITIAL_CAPITAL + getTotalRealizedPnl() (compounding simulado)
+  //   - LIVE:  saldo total real da conta BingX USDC-M
   // Nome do campo `capitalUsdt` mantido para não quebrar consumers.
-  capitalUsdt: num("CAPITAL_USDC", num("CAPITAL_USDT", 200)),
+  capitalUsdt: INITIAL_CAPITAL,
   maxRiskPct: num("MAX_RISK_PCT", 0.01),
   minScore: num("MIN_SCORE", 65),
 
@@ -78,15 +86,6 @@ export const config = {
     apiKey: optional("BINGX_API_KEY", ""),
     secretKey: optional("BINGX_SECRET_KEY", ""),
     baseUrl: optional("BINGX_BASE_URL", "https://open-api.bingx.com"),
-  },
-
-  // BingX — WITHDRAW key (Withdraw + Internal Transfer only).
-  // Separada da trade key por princípio de menor privilégio:
-  // se a trade key vazar, o atacante não consegue sacar.
-  // Só é obrigatória quando AUTO_WITHDRAW_ENABLED=true e WITHDRAW_DRY_RUN=false.
-  bingxWithdraw: {
-    apiKey: optional("BINGX_WITHDRAW_API_KEY", ""),
-    secretKey: optional("BINGX_WITHDRAW_SECRET_KEY", ""),
   },
 
   // Telegram — alertas e (Fase 2) comandos remotos.
@@ -121,10 +120,38 @@ export const config = {
 };
 
 // ── Live Capital Refresh ──────────────────────────────────────
-// Call before each scan or before position sizing to ensure we use
-// the real balance, not the static config value.
-// Falls back silently to config value in paper mode or if API is down.
+// Call before each scan or before position sizing to ensure the
+// effective capital is up to date.
+//
+//   PAPER mode → INITIAL_CAPITAL + soma do P&L realizado de todos os
+//                trades fechados (CLOSED ou STOPPED). Reflete o efeito
+//                de compounding dos trades simulados pra que o sizing
+//                dos próximos use o capital atualizado em vez do valor
+//                congelado do .env.
+//
+//   LIVE mode  → saldo total real da conta BingX USDC-M (preferindo
+//                bal.total, com fallback pra bal.available). O PnL
+//                realizado já está embutido no saldo, não soma duas
+//                vezes.
+//
+// Em qualquer falha (DB ainda não inicializado, BingX offline), volta
+// ao INITIAL_CAPITAL — preserva sizing determinístico em vez de zerar.
 export async function refreshCapital() {
+  if (config.paperTrade) {
+    try {
+      const { getTotalRealizedPnl } = await import("../storage/trades.js");
+      const pnl = getTotalRealizedPnl();
+      config.capitalUsdt = parseFloat((INITIAL_CAPITAL + pnl).toFixed(2));
+    } catch {
+      // Tabela `trades` ainda não criada na primeira execução → fica
+      // no inicial. db.js cria o schema no primeiro `import`, mas se
+      // alguém chamar `refreshCapital()` antes disso, o catch protege.
+      config.capitalUsdt = INITIAL_CAPITAL;
+    }
+    return config.capitalUsdt;
+  }
+
+  // LIVE mode
   try {
     const { getBalance } = await import("../exchanges/bingx.js");
     const bal = await getBalance();
@@ -135,7 +162,8 @@ export async function refreshCapital() {
     }
     return config.capitalUsdt;
   } catch {
-    // Paper mode or no API keys configured — keep static value
+    // BingX offline ou sem keys — não derruba o scan, mantém o último
+    // valor conhecido (que pode ser o inicial ou um anterior bem-sucedido).
     return config.capitalUsdt;
   }
 }
@@ -154,31 +182,6 @@ export function validateBingXKeys() {
       "PAPER_TRADE=false but BINGX_SECRET_KEY is not set.\n" +
         "  → See SETUP_BINGX.md for instructions."
     );
-  }
-}
-
-// ── Validate BingX WITHDRAW keys when auto-withdraw is live ──
-// Só cobra a presença das keys quando AUTO_WITHDRAW_ENABLED=true
-// e WITHDRAW_DRY_RUN=false — ou seja, quando o código vai de fato
-// chamar a BingX para transferir e sacar.
-export function validateBingXWithdrawKeys() {
-  const autoEnabled = (process.env.AUTO_WITHDRAW_ENABLED || "false").toLowerCase() === "true";
-  const dryRun      = (process.env.WITHDRAW_DRY_RUN      || "true").toLowerCase()  === "true";
-  if (!autoEnabled || dryRun) return; // fluxo inerte ou dry-run → skip
-
-  if (!config.bingxWithdraw.apiKey || config.bingxWithdraw.apiKey.includes("your_")) {
-    throw new Error(
-      "AUTO_WITHDRAW_ENABLED=true but BINGX_WITHDRAW_API_KEY is not set.\n" +
-        "  → Set it in .env (separate from trade key; needs Withdraw + Internal Transfer perms)."
-    );
-  }
-  if (!config.bingxWithdraw.secretKey || config.bingxWithdraw.secretKey.includes("your_")) {
-    throw new Error(
-      "AUTO_WITHDRAW_ENABLED=true but BINGX_WITHDRAW_SECRET_KEY is not set."
-    );
-  }
-  if (!process.env.WITHDRAW_WALLET_ADDRESS) {
-    throw new Error("AUTO_WITHDRAW_ENABLED=true but WITHDRAW_WALLET_ADDRESS is empty.");
   }
 }
 

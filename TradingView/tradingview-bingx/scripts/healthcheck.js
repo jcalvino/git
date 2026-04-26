@@ -64,14 +64,21 @@ function parseEnv(text) {
 
 let env = {};
 function checkEnv() {
-  section("1. .env");
+  section("1. .env / variáveis de ambiente");
   const path = resolve(ROOT, ".env");
-  if (!existsSync(path)) {
-    bad("env", ".env não encontrado na raiz — copie .env.example e preencha");
+
+  // Em container Docker o .env não é montado como arquivo — vem via env_file:
+  // como variáveis de ambiente. Detectar isso e validar process.env diretamente.
+  if (existsSync(path)) {
+    ok(".env existe (host)");
+    env = parseEnv(readFileSync(path, "utf8"));
+  } else if (process.env.PAPER_TRADE !== undefined) {
+    ok("variáveis de ambiente carregadas (provavelmente via Docker env_file)");
+    env = process.env;
+  } else {
+    bad("env", "nem .env existe nem PAPER_TRADE está em process.env — env não foi carregado");
     return;
   }
-  ok(".env existe");
-  env = parseEnv(readFileSync(path, "utf8"));
 
   // PAPER_TRADE
   if (env.PAPER_TRADE === "true") {
@@ -82,10 +89,13 @@ function checkEnv() {
     bad("env", `PAPER_TRADE não configurado ou valor inesperado: "${env.PAPER_TRADE}"`);
   }
 
-  // CAPITAL_USDT
-  const cap = parseFloat(env.CAPITAL_USDT ?? "0");
-  if (cap > 0) ok(`CAPITAL_USDT=${cap}`);
-  else bad("env", `CAPITAL_USDT inválido ou vazio: "${env.CAPITAL_USDT}"`);
+  // Capital — aceita CAPITAL_USDC (preferido) ou CAPITAL_USDT (legacy)
+  // Mesma lógica de src/config/index.js
+  const capRaw = env.CAPITAL_USDC ?? env.CAPITAL_USDT ?? "0";
+  const cap = parseFloat(capRaw);
+  const capVar = env.CAPITAL_USDC ? "CAPITAL_USDC" : "CAPITAL_USDT";
+  if (cap > 0) ok(`${capVar}=${cap} (fallback estático; refreshCapital lê BingX em runtime)`);
+  else bad("env", `nem CAPITAL_USDC nem CAPITAL_USDT estão configurados`);
 
   // MIN_SCORE
   const ms = parseInt(env.MIN_SCORE ?? "0");

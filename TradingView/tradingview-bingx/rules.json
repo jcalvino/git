@@ -138,7 +138,7 @@
   "market_context_2026_04_25": {
     "last_updated": "2026-04-25",
     "overall_bias": "cautious",
-    "overall_bias_reason": "Regime BTC enfraqueceu desde 24/04 (CHOP → BEAR, score -4): preço perdeu EMA200 D1 e EMA21 W1, RSI W1 caiu pra ~40, MACD W1 hist virou negativo. ETH continua CHOP. Mantenho 'cautious' (não 'bearish') porque o on-chain do Cryptocampos ainda tá em zona de acumulação cíclica e a divergência bullish oculta no RSI W1 segue válida — virar 'bearish' favoreceria SHORTs no scoring sem evidência estrutural suficiente.",
+    "overall_bias_reason": "Regime BTC enfraqueceu desde 24/04 (CHOP → BEAR, score -4): preço perdeu EMA200 D1 e EMA21 W1, RSI W1 caiu pra ~40, MACD W1 hist virou negativo. ETH continua CHOP. Sandro Cabrales (25/04) reforça leitura bearish de curto prazo (short ativo @78.196, alvo $70-70.5k) com confluência exata de níveis vs Cryptocampos: zona $78.500 (Sandro = decision zone, Cryptocampos = EMA21 W1) e $79-80k (Sandro = psicológico, Cryptocampos = STH RP $79.391). Mantenho 'cautious' por enquanto (não 'bearish') porque on-chain ainda em zona de acumulação cíclica do Cryptocampos e divergência bullish oculta no RSI W1 segue válida — virar 'bearish' favoreceria SHORTs no scoring sem invalidação estrutural definitiva. AGUARDAR 24-48h pra ver direção do breakout (Sandro alerta movimento iminente até abertura de segunda).",
     "fear_greed_index": 39,
     "fear_greed_label": "Fear",
     "btc": {
@@ -196,6 +196,60 @@
         "channel": "YouTube",
         "specialty": "technical/fibonacci",
         "date": "2026-04-25",
+        "input_type": "analysis",
+        "still_active": true,
+        "bias_btc": "bearish_short_term",
+        "bias_eth": "bearish_short_term",
+        "alert": "imminent_breakout",
+        "alert_window_hours": 48,
+        "alert_reason": "Volatilidade comprimida (BTC 1.8% / ETH 1.46% nas últimas 48h). Movimento forte esperado entre fechamento de domingo e abertura de segunda.",
+        "btc": {
+          "price_at_analysis": 77376,
+          "decision_zone": { "price": 78500, "note": "divisor de águas LONG vs SHORT" },
+          "key_levels": [
+            { "price": 79400,                        "type": "resistance", "label": "Resistência imediata curto prazo",         "category": "technical",     "strength": "weak" },
+            { "price": 80000,                        "type": "resistance", "label": "Nível psicológico — precisa virar suporte", "category": "psychological", "strength": "strong" },
+            { "price": 85000,                        "type": "resistance", "label": "Alvo de continuidade do ciclo de alta",      "category": "technical",     "strength": "medium" },
+            { "price": 87000,                        "type": "resistance", "label": "Resistência técnica (Gus Antieno)",          "category": "technical",     "strength": "medium" },
+            { "price_low": 70000, "price_high": 70500, "type": "support",  "label": "Fundo da bandeira de baixa / alvo correção", "category": "technical",     "strength": "strong" }
+          ],
+          "chart_pattern": {
+            "type": "descending_flag",
+            "support": 70500,
+            "resistance": 79400,
+            "current_status": "preço ainda dentro da bandeira"
+          },
+          "scenarios": {
+            "long": {
+              "entry_condition": "Rompimento definitivo de $78.500 + superação de $80.000",
+              "confirmation": "Preço transforma $80.000 em suporte (faz 'suportezinho' acima)",
+              "target": 85000
+            },
+            "short": {
+              "entry_condition": "Fracasso em romper $78.000–$78.500",
+              "confirmation": "Tentativa de romper e voltar a cair confirma fraqueza",
+              "target_low": 70000,
+              "target_high": 70500
+            }
+          },
+          "open_trade_example": {
+            "side": "SHORT",
+            "entry": 78196,
+            "stop_loss_range": { "low": 79500, "high": 79560 },
+            "stop_management": "Se o preço romper $79.500 com força, estopar — probabilidade de reversão pra LONG aumenta significativamente"
+          },
+          "risk_warning": "Abrir NOVAS posições agora é altamente arriscado — ciclo de correção 2026 ainda não terminou. Quem já está posicionado, segura."
+        },
+        "eth": {
+          "current_position": "short_holding",
+          "note": "Manter short aguardando alvo, aproveitando a baixa oscilação até o rompimento do final de semana"
+        }
+      },
+      {
+        "source": "Sandro Cabrales",
+        "channel": "YouTube",
+        "specialty": "technical/fibonacci",
+        "date": "2026-04-25",
         "input_type": "methodology",
         "still_active": true,
         "bias_btc": null,
@@ -242,10 +296,18 @@
         }
       }
     ],
-    "consensus_levels_btc": [],
+    "consensus_levels_btc": [
+      { "price": 78500, "type": "decision_zone",       "confirmations": 2, "sources": ["Cryptocampos (EMA21 W1)", "Sandro Cabrales (decision zone)"],   "note": "Confluência forte — divisor LONG vs SHORT" },
+      { "price_low": 79391, "price_high": 80000, "type": "resistance", "confirmations": 2, "sources": ["Cryptocampos (STH RP $79.391)", "Sandro Cabrales (psicológico $80k)"], "note": "Banda on-chain + psicológica" }
+    ],
     "consensus_levels_eth": [],
-    "macro_drivers_to_watch": [],
-    "key_dates_ahead": [],
-    "contrarian_signal": "Mesmo com BTC em BEAR técnico (score -4), on-chain do Cryptocampos (MVRV 1.43, LTH RP $48k, zona de acumulação $49-76k) sugere fundo estrutural ainda distante — a queda atual pode ser ruído dentro do ciclo, não inversão. Reforça o 'cautious' em vez de 'bearish'."
+    "macro_drivers_to_watch": [
+      "Volatilidade comprimida BTC 1.8% / ETH 1.46% últimas 48h — breakout iminente segundo Sandro Cabrales (25/04)",
+      "Janela 24-48h: fechamento de domingo até abertura de segunda"
+    ],
+    "key_dates_ahead": [
+      "2026-04-26 (domingo) → 2026-04-27 (segunda): janela de breakout BTC esperada — observar zona de decisão $78.500"
+    ],
+    "contrarian_signal": "Mesmo com BTC em BEAR técnico (score -4) e Sandro Cabrales bearish, on-chain do Cryptocampos (MVRV 1.43, LTH RP $48k, zona de acumulação $49-76k) sugere fundo estrutural ainda distante — a queda atual pode ser ruído dentro do ciclo, não inversão. Mantém 'cautious' em vez de 'bearish' até o breakout confirmar direção."
   }
 }

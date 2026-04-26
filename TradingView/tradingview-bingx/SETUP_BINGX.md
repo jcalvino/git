@@ -7,22 +7,19 @@
 
 ## Arquitetura de keys — princípio de menor privilégio
 
-O projeto usa **duas API keys separadas** na BingX:
+O projeto usa **uma única API key** na BingX, com escopo mínimo:
 
 | Key | Permissões | Usada por | Var .env |
 |---|---|---|---|
 | **TRADE** | Futures Read + Futures Trade | scanner, executor, monitor | `BINGX_API_KEY` / `BINGX_SECRET_KEY` |
-| **WITHDRAW** | Withdraw + Internal Transfer | `src/exchanges/withdraw.js` | `BINGX_WITHDRAW_API_KEY` / `BINGX_WITHDRAW_SECRET_KEY` |
 
-Benefício: se a **trade key** vazar (roda em CI, logs, containers), o
-atacante não consegue sacar fundos — ela não tem permissão Withdraw.
-Inversamente, a **withdraw key** não consegue abrir posição alguma.
+A key **não** tem permissão de Withdraw nem Internal Transfer. Se ela
+vazar (roda em CI, logs, containers), o atacante não consegue mover
+dinheiro pra fora — só pode abrir/fechar posições, o que é
+auto-contido no saldo da Perpetual.
 
-A withdraw key é **opcional**. Se ficar em branco, `withdraw.js` cai de
-volta para a trade key e loga um aviso — mas nesse caso a trade key
-teria que ter Withdraw habilitado, o que é exatamente o que queremos
-evitar. Só rode `AUTO_WITHDRAW_ENABLED=true` + `WITHDRAW_DRY_RUN=false`
-depois de gerar a segunda key.
+Saques são feitos **manualmente** no console da BingX quando você
+quiser realizar lucro acumulado. O bot não move USDC pra fora.
 
 ## Passo a Passo
 
@@ -46,61 +43,41 @@ Permissões desta key (somente estas):
 - ❌ **Internal Transfer** — NÃO habilitar nesta key
 - ❌ Sub-account
 
-### 3. Criar a API Key de WITHDRAW (segunda key)
-
-Somente se você for ligar `AUTO_WITHDRAW_ENABLED=true`. Caso contrário
-pode pular este passo.
-
-1. Clique em **"Create API"** de novo (nova key separada)
-2. Label: `btc-eth-trader-withdraw`
-3. Passphrase: uma senha forte DIFERENTE da trade key
-
-Permissões desta key (somente estas):
-- ✅ **Withdraw** — obrigatório
-- ✅ **Internal Transfer** — obrigatório (move USDC de Perpetual → Fund/Main)
-- ❌ **Futures Trade** — NÃO habilitar nesta key
-- ❌ Sub-account
-
-### 4. Restrição de IP (Recomendado)
+### 3. Restrição de IP (Recomendado)
 
 Para maior segurança, adicione seu IP público:
 - Descubra seu IP em: [whatismyip.com](https://www.whatismyip.com)
 - Adicione na lista de IPs permitidos
 - Isso garante que a chave só funciona do seu computador
 
-### 5. Confirmar com 2FA
+### 4. Confirmar com 2FA
 
 Complete a verificação com seu app autenticador ou e-mail.
 
-### 6. Salvar as credenciais
+### 5. Salvar as credenciais
 
-Para **cada** key criada (trade e, se aplicável, withdraw) você verá:
+Você verá:
 - **API Key**: string longa (ex: `abc123def456...`)
 - **Secret Key**: string longa — **copie agora, não aparece novamente!**
 
-Guarde as 4 strings em local seguro (password manager).
+Guarde as 2 strings em local seguro (password manager).
 
-### 7. Configurar no projeto
+### 6. Configurar no projeto
 
 ```bash
-# Na pasta btc-eth-trader/
+# Na pasta tradingview-bingx/
 cp .env.example .env
 ```
 
 Abra `.env` e preencha:
 ```
-# Trade key (obrigatória p/ live trading)
 BINGX_API_KEY=sua_trade_api_key_aqui
 BINGX_SECRET_KEY=sua_trade_secret_key_aqui
-
-# Withdraw key (deixe em branco se AUTO_WITHDRAW_ENABLED=false)
-BINGX_WITHDRAW_API_KEY=sua_withdraw_api_key_aqui
-BINGX_WITHDRAW_SECRET_KEY=sua_withdraw_secret_key_aqui
 
 PAPER_TRADE=true   # mantenha true para testar primeiro!
 ```
 
-### 8. Testar a conexão
+### 7. Testar a conexão
 
 ```bash
 node src/exchanges/bingx.js
@@ -114,7 +91,7 @@ Saída esperada:
    ETH price: $2,315.00
 ```
 
-### 9. Antes de ativar trades reais
+### 8. Antes de ativar trades reais
 
 - [ ] Rodar em PAPER_TRADE=true por pelo menos 2 semanas
 - [ ] Validar que os sinais gerados fazem sentido
